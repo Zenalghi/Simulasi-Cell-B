@@ -8,69 +8,77 @@ import paho.mqtt.client as mqtt
 # =========================================================
 MQTT_BROKER = "broker.mqtt.cool"
 MQTT_PORT = 1883
-TOPIC_JIKONG = "bms_panel/260216/data/main"
+TOPIC_INJECT = "bms_panel/2602165/data/main" # Sesuaikan dengan topik C++
 
-# Inisialisasi MQTT Client (Format paho-mqtt versi 1.x)
 client = mqtt.Client(client_id="Laptop_Injector")
 client.connect(MQTT_BROKER, MQTT_PORT, 60)
 client.loop_start()
 
 # =========================================================
-# 2. LOAD DATASET (AUTO-DETEKSI BARIS HEADER)
+# 2. MENU PEMILIHAN DATASET
 # =========================================================
-print("⏳ Membaca file CSV...")
+print("=== MENU SIMULASI HiL BMS ===")
+print("1. Pengisian Daya (charge-rest 60m.csv)")
+print("2. Pengosongan Konstan (DCC 4.4A...csv)")
+print("3. Pembebanan Dinamis Urban Load (Dynamic Profiling.csv)")
+pilihan = input("Pilih dataset (1/2/3): ")
 
-def load_zke_data(filepath):
-    skip_rows = 0
-    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-        for i, line in enumerate(f):
-            if "Time(S)" in line or "Vol(V)" in line:
-                skip_rows = i
-                break
-                
-    df = pd.read_csv(filepath, skiprows=skip_rows)
-    df.columns = [col.strip() for col in df.columns]
-    return df
+if pilihan == '1':
+    file_path = "charge-rest 60m.csv"
+elif pilihan == '2':
+    file_path = "DCC 4.4A, 2.5V - CCV 6.6, 3.65V - DCC 4.4A, 2.5V.csv"
+elif pilihan == '3':
+    file_path = "Dynamic Profiling (Urban Load).csv"
+else:
+    print("Pilihan tidak valid!")
+    exit()
 
-df = load_zke_data("Dynamic Profiling (Urban Load).csv")
+print(f"\nMemuat dataset: {file_path}")
+try:
+    df = pd.read_csv(file_path)
+except FileNotFoundError:
+    print("Error: File CSV tidak ditemukan di folder yang sama!")
+    exit()
 
-print(f"✅ Berhasil membaca {len(df)} baris data!")
-print("🚀 Mulai mengirim data ke ESP32 (HIL Simulation)...")
-time.sleep(2) 
+# PASTIKAN NAMA KOLOM SESUAI DENGAN FORMAT ZKETECH
+# Biasanya: 'Voltage(V)', 'Current(A)', 'Capacity(Ah)'
+# Silakan ubah string di bawah jika nama kolomnya beda
+col_v = 'Voltage' 
+col_i = 'Current'
+
+print("Memulai Injeksi Data ke ESP32 dalam 3 detik...")
+time.sleep(3)
 
 # =========================================================
-# 3. LOOPING INJEKSI DATA KE ESP32
+# 3. LOOP INJEKSI DATA (SIMULASI WAKTU NYATA)
 # =========================================================
 for index, row in df.iterrows():
-    try:
-        volt = float(row['Vol(V)'])
-        curr = float(row['Cur(A)']) 
-        
-        cell_v = volt / 8.0 
-        
-        payload = {
-            "voltage": volt,
-            "current": curr,
-            "power": volt * curr,
-            "bat_temp1": 28.5,
-            "mos_temp": 30.0,
-            "cells_v": [cell_v]*8,
-            "wire_res": [0.3]*8
-        }
-        
-        client.publish(TOPIC_JIKONG, json.dumps(payload))
-        
-        print(f"[Iterasi {index}] Mengirim -> Volt: {volt:.3f}V | Amp: {curr:.2f}A")
-        
-        # Jeda pengiriman
-        time.sleep(0.05) 
-        
-    except KeyError as e:
-        print(f"❌ Error nama kolom tidak cocok: {e}")
-        break
-    except Exception as e:
-        print(f"❌ Error tak terduga: {e}")
-        break
+    # ZKETECH menganggap discharge positif, charge negatif. 
+    # Pastikan orientasinya sama dengan logika Coulomb Counting ESP32 mu.
+    v_meas = float(row[col_v])
+    i_meas = float(row[col_i]) 
+    
+    # TRICK: Karena kode ESP32 menghitung avg_cell_v dari 8 sel,
+    # kita kirim tegangan 1S zketech ini ke semua 8 array sel.
+    cells_array = [v_meas] * 8
+    
+    payload = {
+        "voltage": v_meas, # Anggap sistem 1S
+        "current": i_meas,
+        "power": v_meas * i_meas,
+        "mos_temp": 30.0,  # Dummy suhu
+        "bat_temp1": 26.0, # Dummy suhu
+        "bat_temp2": 26.5, # Dummy suhu
+        "cells_v": cells_array,
+        "wire_res": [0.0] * 8
+    }
+    
+    # Kirim ke ESP32
+    client.publish(TOPIC_INJECT, json.dumps(payload))
+    print(f"Step {index}: Injected V={v_meas:.3f}V, I={i_meas:.2f}A")
+    
+    # Delay 1 detik untuk menyimulasikan waktu nyata (sesuai dt=1.0 di ESP32)
+    time.sleep(1) 
 
-print("✅ Simulasi Selesai!")
-client.disconnect()
+print("Simulasi Selesai!")
+client.loop_stop()
