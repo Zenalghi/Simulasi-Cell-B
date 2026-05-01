@@ -21,16 +21,16 @@ pilihan = input("Pilih dataset (1/2/3): ")
 
 # Inisialisasi variabel berdasarkan pilihan
 if pilihan == '1':
-    file_path = r"HIL Simulation via MQTT\charge-rest 60m.csv"
+    file_path = r"charge-rest 60m.csv"
     TOPIC_INJECT = "bms_panel/2602165/data/main"
     CLIENT_ID = "Laptop_Injector"
 elif pilihan == '2':
-    file_path = r"HIL Simulation via MQTT\DCC 4.4A, 2.5V - CCV 6.6, 3.65V - DCC 4.4A, 2.5V.csv"
+    file_path = r"DCC 4.4A, 2.5V.csv"
     TOPIC_INJECT = "batteryss/54673/data/main"
     CLIENT_ID = "Laptop2-injector"
 elif pilihan == '3':
-    file_path = r"HIL Simulation via MQTT\Dynamic Profiling (Urban Load).csv"
-    TOPIC_INJECT = "storagees/45123/data/main"
+    file_path = r"Dynamic Profiling (Urban Load).csv"
+    TOPIC_INJECT = "bms_panel/2602165/data/main"
     CLIENT_ID = "Laptop3-injector"
 else:
     print("Pilihan tidak valid!")
@@ -121,7 +121,7 @@ for index, row in df.iterrows():
     
     # Kirim ke ESP32
     client.publish(TOPIC_INJECT, json.dumps(payload))
-    print(f"[{CLIENT_ID}] Step {index}: Injected V={v_meas:.3f}V, I={i_meas:.2f}A to {TOPIC_INJECT}")
+    print(f"[{CLIENT_ID}] Step {index}: Injected V={v_meas:.3f}V, I={i_meas:.2f}A")
     
     # Delay 1 detik untuk menyimulasikan waktu nyata (sesuai dt=1.0 di ESP32)
     time.sleep(1) 

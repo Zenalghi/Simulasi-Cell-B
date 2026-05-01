@@ -35,7 +35,7 @@ elif pilihan == '2':
     CLIENT_ID = "Laptop2-logger"
 elif pilihan == '3':
     # Disamakan ke /calc seperti skenario lain agar seragam untuk logger
-    TOPIC_CALC = "storagees/45123/data/calc" 
+    TOPIC_CALC = "bms_panel/2602165/data/calc"
     FOLDER_PATH = "HIL Skenario3_Logger"
     NAMA_FILE = os.path.join(FOLDER_PATH, f"Hasil_Skenario3_HiL_{waktu_mulai}.csv")
     CLIENT_ID = "Laptop3-logger"
