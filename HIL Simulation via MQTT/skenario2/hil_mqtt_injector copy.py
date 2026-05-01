@@ -9,9 +9,9 @@ import os
 # =========================================================
 MQTT_BROKER = "broker.mqtt.cool"
 MQTT_PORT = 1883
-TOPIC_INJECT = "bms_panel/2602165/data/main" # Sesuai dengan topik C++ Anda
+TOPIC_INJECT = "batteryss/54673/data/main" # Sesuai dengan topik C++ Anda
 
-client = mqtt.Client(client_id="Laptop_Injector")
+client = mqtt.Client(client_id="Laptop2-injector")
 client.connect(MQTT_BROKER, MQTT_PORT, 60)
 client.loop_start()
 
@@ -27,7 +27,7 @@ pilihan = input("Pilih dataset (1/2/3): ")
 if pilihan == '1':
     file_path = r"HIL Simulation via MQTT\charge-rest 60m.csv"
 elif pilihan == '2':
-    file_path = r"HIL Simulation via MQTT\DCC 4.4A, 2.5V - CCV 6.6, 3.65V - DCC 4.4A, 2.5V.csv"
+    file_path = r"DCC 4.4A, 2.5V - CCV 6.6, 3.65V - DCC 4.4A, 2.5V.csv"
 elif pilihan == '3':
     file_path = r"HIL Simulation via MQTT\Dynamic Profiling (Urban Load).csv"
 else:

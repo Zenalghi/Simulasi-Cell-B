@@ -10,16 +10,16 @@ from datetime import datetime
 # =========================================================
 MQTT_BROKER = "broker.mqtt.cool"
 MQTT_PORT = 1883
-TOPIC_CALC = "bms_panel/2602165/data/calc"
+TOPIC_CALC = "batteryss/54673/data/calc"
 
 # Pastikan folder target ada
-FOLDER_PATH = "HIL Simulation via MQTT"
+FOLDER_PATH = "HIL Skenario2_Logger"
 if not os.path.exists(FOLDER_PATH):
     os.makedirs(FOLDER_PATH)
 
 # Nama file output (otomatis dengan timestamp) disimpan ke dalam folder
 waktu_mulai = datetime.now().strftime("%Y%m%d_%H%M%S")
-NAMA_FILE = os.path.join(FOLDER_PATH, f"Hasil_Simulasi_HiL_{waktu_mulai}.csv")
+NAMA_FILE = os.path.join(FOLDER_PATH, f"Hasil_Skenario2_HiL_{waktu_mulai}.csv")
 
 print(f"Mempersiapkan file: {NAMA_FILE}")
 
@@ -68,7 +68,7 @@ def on_message(client, userdata, msg):
 # =========================================================
 # 3. JALANKAN LOGGER
 # =========================================================
-client = mqtt.Client(client_id="Laptop_Logger")
+client = mqtt.Client(client_id="Laptop2-logger")
 client.on_connect = on_connect
 client.on_message = on_message
 
