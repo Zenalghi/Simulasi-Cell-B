@@ -5,18 +5,13 @@ import paho.mqtt.client as mqtt
 import os
 
 # =========================================================
-# 1. KONFIGURASI MQTT
+# 1. KONFIGURASI MQTT BROKER UMUM
 # =========================================================
 MQTT_BROKER = "broker.mqtt.cool"
 MQTT_PORT = 1883
-TOPIC_INJECT = "bms_panel/2602165/data/main" # Sesuai dengan topik C++ Anda
-
-client = mqtt.Client(client_id="Laptop_Injector")
-client.connect(MQTT_BROKER, MQTT_PORT, 60)
-client.loop_start()
 
 # =========================================================
-# 2. MENU PEMILIHAN DATASET
+# 2. MENU PEMILIHAN DATASET & SKENARIO
 # =========================================================
 print("=== MENU SIMULASI HiL BMS ===")
 print("1. Pengisian Daya (charge-rest 60m.csv)")
@@ -24,25 +19,47 @@ print("2. Pengosongan Konstan (DCC 4.4A...csv)")
 print("3. Pembebanan Dinamis Urban Load (Dynamic Profiling.csv)")
 pilihan = input("Pilih dataset (1/2/3): ")
 
+# Inisialisasi variabel berdasarkan pilihan
 if pilihan == '1':
     file_path = r"HIL Simulation via MQTT\charge-rest 60m.csv"
+    TOPIC_INJECT = "bms_panel/2602165/data/main"
+    CLIENT_ID = "Laptop_Injector"
 elif pilihan == '2':
     file_path = r"HIL Simulation via MQTT\DCC 4.4A, 2.5V - CCV 6.6, 3.65V - DCC 4.4A, 2.5V.csv"
+    TOPIC_INJECT = "batteryss/54673/data/main"
+    CLIENT_ID = "Laptop2-injector"
 elif pilihan == '3':
     file_path = r"HIL Simulation via MQTT\Dynamic Profiling (Urban Load).csv"
+    TOPIC_INJECT = "storagees/45123/data/main"
+    CLIENT_ID = "Laptop3-injector"
 else:
     print("Pilihan tidak valid!")
     exit()
 
 print(f"\nMemuat dataset: {file_path}")
+print(f"Menggunakan Client ID: {CLIENT_ID}")
+print(f"Target Topik MQTT: {TOPIC_INJECT}")
+
+# =========================================================
+# 3. KONEKSI MQTT (Dilakukan setelah skenario dipilih)
+# =========================================================
+try:
+    client = mqtt.Client(client_id=CLIENT_ID)
+    client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    client.loop_start()
+    print("Berhasil terhubung ke Broker MQTT.")
+except Exception as e:
+    print(f"Gagal terhubung ke Broker MQTT: {e}")
+    exit()
 
 # Cek apakah file benar-benar ada
 if not os.path.exists(file_path):
     print(f"Error: File CSV tidak ditemukan! Pastikan path folder benar.")
+    client.loop_stop()
     exit()
 
 # =========================================================
-# FITUR BARU: AUTO-SKIP ZKETECH METADATA
+# 4. AUTO-SKIP ZKETECH METADATA
 # =========================================================
 # Kita cari baris ke berapa yang mengandung "Time(S),Cur(A),Vol(V)"
 header_row = 0
@@ -59,6 +76,7 @@ try:
     df = pd.read_csv(file_path, skiprows=header_row)
 except Exception as e:
     print(f"Gagal membaca CSV: {e}")
+    client.loop_stop()
     exit()
 
 # Menyesuaikan nama kolom dengan format ZKETECH
@@ -69,7 +87,7 @@ print("Memulai Injeksi Data ke ESP32 dalam 3 detik...")
 time.sleep(3)
 
 # =========================================================
-# 3. LOOP INJEKSI DATA (SIMULASI WAKTU NYATA)
+# 5. LOOP INJEKSI DATA (SIMULASI WAKTU NYATA)
 # =========================================================
 for index, row in df.iterrows():
     v_meas = float(row[col_v])
@@ -103,7 +121,7 @@ for index, row in df.iterrows():
     
     # Kirim ke ESP32
     client.publish(TOPIC_INJECT, json.dumps(payload))
-    print(f"Step {index}: Injected V={v_meas:.3f}V, I={i_meas:.2f}A")
+    print(f"[{CLIENT_ID}] Step {index}: Injected V={v_meas:.3f}V, I={i_meas:.2f}A to {TOPIC_INJECT}")
     
     # Delay 1 detik untuk menyimulasikan waktu nyata (sesuai dt=1.0 di ESP32)
     time.sleep(1) 
