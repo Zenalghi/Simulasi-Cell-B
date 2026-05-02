@@ -22,21 +22,24 @@ pilihan = input("Pilih skenario logger (1/2/3): ")
 
 waktu_mulai = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+# Dapatkan direktori absolut tempat file script .py ini berada
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Menyesuaikan konfigurasi berdasarkan pilihan
 if pilihan == '1':
     TOPIC_CALC = "bms_panel/2602165/data/calc"
-    FOLDER_PATH = "HIL Skenario1_Logger"
+    FOLDER_PATH = os.path.join(BASE_DIR, "HIL Skenario1_Logger")
     NAMA_FILE = os.path.join(FOLDER_PATH, f"Hasil_Skenario1_HiL_{waktu_mulai}.csv")
     CLIENT_ID = "Laptop1-logger"
 elif pilihan == '2':
     TOPIC_CALC = "batteryss/54673/data/calc"
-    FOLDER_PATH = "HIL Skenario2_Logger"
+    FOLDER_PATH = os.path.join(BASE_DIR, "HIL Skenario2_Logger")
     NAMA_FILE = os.path.join(FOLDER_PATH, f"Hasil_Skenario2_HiL_{waktu_mulai}.csv")
     CLIENT_ID = "Laptop2-logger"
 elif pilihan == '3':
     # Disamakan ke /calc seperti skenario lain agar seragam untuk logger
     TOPIC_CALC = "bms_panel/2602165/data/calc"
-    FOLDER_PATH = "HIL Skenario3_Logger"
+    FOLDER_PATH = os.path.join(BASE_DIR, "HIL Skenario3_Logger")
     NAMA_FILE = os.path.join(FOLDER_PATH, f"Hasil_Skenario3_HiL_{waktu_mulai}.csv")
     CLIENT_ID = "Laptop3-logger"
 else:
