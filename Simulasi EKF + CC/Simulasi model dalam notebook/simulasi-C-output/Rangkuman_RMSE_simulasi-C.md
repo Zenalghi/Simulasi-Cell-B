@@ -70,6 +70,7 @@ Berdasarkan simulasi yang dilakukan, sistem algoritma diberikan nilai start awal
 | Pengujian Charging (C-CV) | 4.2479% | 8.8390% | 25.2633 mV |
 | Pengujian Discharging (D-CC) | 9.6592% | 7.8164% | 8.2845 mV |
 | Pengujian Pembebanan Dinamis (Urban Load) | 4.5892% | 3.3079% | 14.6845 mV |
+| Pengujian Mixed (D-CC & C-CV 7.33A) | 0.6107% | 4.8346% | 26.5971 mV |
 
 ## 3. Analisis Keberhasilan
 - **Kelemahan CC:** Karena CC beroperasi secara *open-loop*, metode ini tidak mampu mengoreksi error inisialisasi awal. Error RMSE CC akan selalu tinggi secara paralel dengan Ground Truth.
