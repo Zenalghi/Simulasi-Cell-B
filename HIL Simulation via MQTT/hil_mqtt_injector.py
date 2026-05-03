@@ -21,15 +21,15 @@ pilihan = input("Pilih dataset (1/2/3): ")
 
 # Inisialisasi variabel berdasarkan pilihan
 if pilihan == '1':
-    file_path = r"charge-rest 60m.csv"
+    file_path = r"HIL Simulation via MQTT\charge-rest 60m.csv"
     TOPIC_INJECT = "bms_panel/2602165/data/main"
     CLIENT_ID = "Laptop_Injector"
 elif pilihan == '2':
-    file_path = r"DCC 4.4A, 2.5V.csv"
+    file_path = r"HIL Simulation via MQTT\DCC 4.4A, 2.5V.csv"
     TOPIC_INJECT = "batteryss/54673/data/main"
     CLIENT_ID = "Laptop2-injector"
 elif pilihan == '3':
-    file_path = r"Dynamic Profiling (Urban Load).csv"
+    file_path = r"HIL Simulation via MQTT\Dynamic Profiling (Urban Load).csv"
     TOPIC_INJECT = "bms_panel/2602165/data/main"
     CLIENT_ID = "Laptop3-injector"
 else:
