@@ -49,14 +49,15 @@ const float lut_c1[LUT_ECM_SIZE] = {
     19607.70, 15177.97, 16580.74, 24189.08};
 
 // =========================================================
-// 3. TUNING NOISE PARAMETER EKF (SIMULASI F)
+// 3. TUNING NOISE PARAMETER EKF (SIMULASI G)
 // =========================================================
 const float Q_NOISE_00 = 1e-7;
-const float Q_NOISE_11 = 5e-4; // Diubah untuk Simulasi F
+const float Q_NOISE_11 = 5e-4;
 
-// R adaptif yang dipertajam:
-const float R_NOISE_CHARGE = 0.06;     // Ekstra skeptis pada sensor saat saturasi Charging
-const float R_NOISE_DISCHARGE = 0.005; // Ekstra tajam saat Discharge/Rest
+// R adaptif tiga-state: REST paling tajam, DISCHARGE tajam, CHARGE skeptis saat CV
+const float R_NOISE_CHARGE = 0.035;
+const float R_NOISE_DISCHARGE = 0.004;
+const float R_NOISE_REST = 0.0008;
 
 // =========================================================
 // 4. VARIABEL STATE ESTIMATION
@@ -155,8 +156,19 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   float h0 = dOCV_dSOC;
   float h1 = -1.0f;
 
-  // Gunakan R_NOISE adaptif
-  float R_eff = (I_meas < 0.0f) ? R_NOISE_CHARGE : R_NOISE_DISCHARGE;
+  float R_eff;
+  if (fabsf(I_meas) < 0.05f)
+  {
+    R_eff = R_NOISE_REST; // Fase REST: tegangan = OCV murni, sangat dipercaya
+  }
+  else if (I_meas < 0.0f)
+  {
+    R_eff = R_NOISE_CHARGE; // Fase CHARGING: skeptis di area saturasi CV
+  }
+  else
+  {
+    R_eff = R_NOISE_DISCHARGE; // Fase DISCHARGE: tajam, sensor handal
+  }
 
   float S = (h0 * h0 * P_pred[0][0]) + (h0 * h1 * P_pred[0][1]) +
             (h1 * h0 * P_pred[1][0]) + (h1 * h1 * P_pred[1][1]) + R_eff;
@@ -363,6 +375,7 @@ void setup()
   Serial.printf(" - Q_NOISE_11 (Pola) : %e\n", Q_NOISE_11);
   Serial.printf(" - R_CHARGE (CV)     : %f\n", R_NOISE_CHARGE);
   Serial.printf(" - R_DISCHARGE       : %f\n", R_NOISE_DISCHARGE);
+  Serial.printf(" - R_REST (Fase OCV) : %f\n", R_NOISE_REST);
   Serial.println(" - P_init (Awal)     : [[0.1, 0.0], [0.0, 0.01]]");
   Serial.println("===========================================================================\n");
 
@@ -370,7 +383,7 @@ void setup()
   // CETAK FORMAT MARKDOWN UNTUK COPY-PASTE DOKUMENTASI
   // =======================================================
   Serial.println("\n\n<!-- COPY MULAI DARI BAWAH INI -->");
-  Serial.println("## Tabel Hasil Perhitungan RMSE Simulasi-F (PiL ESP32)");
+  Serial.println("## Tabel Hasil Perhitungan RMSE Simulasi-G (PiL ESP32)");
   Serial.println("Berdasarkan simulasi Processor-in-the-Loop (PiL) di ESP32, sistem algoritma diberikan nilai start awal yang sedikit *meleset* dari State of Charge sebenarnya (mensimulasikan *memory loss* di ESP32). Berikut adalah perbandingan tingkat error (RMSE) antara metode Coulomb Counting (CC) dan Extended Kalman Filter (EKF):");
   Serial.println("\n| Skenario Pengujian | RMSE SoC (CC) | RMSE SoC (EKF) | RMSE Tegangan (EKF) |");
   Serial.println("| :--- | :---: | :---: | :---: |");
@@ -391,13 +404,14 @@ void setup()
                   final_results[i].rmse_v);
   }
 
-  Serial.println("\n### Parameter Tuning EKF yang Digunakan (Simulasi F - Optimasi Final)");
+  Serial.println("\n### Parameter Tuning EKF yang Digunakan (Simulasi G - Tiga State)");
   Serial.println("* **Q Matriks (Process Noise):**");
   Serial.printf("  * `Q_00` (Noise Arus) : %e\n", Q_NOISE_00);
   Serial.printf("  * `Q_11` (Noise Polarisasi) : %e\n", Q_NOISE_11);
   Serial.println("* **R Matriks (Measurement Noise - Adaptive):**");
   Serial.printf("  * `R_CHARGE` (Skeptis saat CV) : %f\n", R_NOISE_CHARGE);
   Serial.printf("  * `R_DISCHARGE` (Tajam saat kuras) : %f\n", R_NOISE_DISCHARGE);
+  Serial.printf("  * `R_REST` (Sangat tajam saat OCV) : %f\n", R_NOISE_REST);
   Serial.println("* **P_init (Initial Error Covariance):** `P[0][0]` = 0.1, `P[1][1]` = 0.01");
   Serial.println("<!-- COPY SAMPAI SINI -->\n");
 }
