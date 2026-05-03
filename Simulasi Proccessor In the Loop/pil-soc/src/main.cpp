@@ -12,7 +12,7 @@ struct TestResult
   float rmse_ekf;
   float rmse_v;
 };
-TestResult final_results[4];
+TestResult final_results[5]; // Diubah menjadi 5 untuk menampung dataset baru
 int result_index = 0;
 
 // =========================================================
@@ -64,7 +64,7 @@ const float R_NOISE_REST = 0.0008;
 // =========================================================
 float soc_cc = 0.0;
 float ekf_x[2] = {0.0, 0.0};
-float ekf_P[2][2] = {{0.1, 0.0}, {0.0, 0.01}}; // Diubah untuk Simulasi F
+float ekf_P[2][2] = {{0.1, 0.0}, {0.0, 0.01}};
 
 float v_pred_last = 0.0;
 float soc_true = 0.0;
@@ -286,7 +286,7 @@ void runDatasetTest(String filename, String mode)
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
 
-      // Inisialisasi P_init sesuai Simulasi F
+      // Inisialisasi P_init sesuai Simulasi G
       ekf_P[0][0] = 0.1;
       ekf_P[0][1] = 0.0;
       ekf_P[1][0] = 0.0;
@@ -306,14 +306,14 @@ void runDatasetTest(String filename, String mode)
 
     total_samples++;
 
-    if (total_samples % 1000 == 0)
+    if (total_samples % 3000 == 0)
     {
       Serial.printf("       -> Progres EKF: Baris ke-%ld diproses...\n", total_samples);
     }
   }
   file.close();
 
-  if (result_index < 4)
+  if (result_index < 5)
   {
     final_results[result_index].filename = filename.substring(0, 20);
     final_results[result_index].rmse_cc = sqrt(sum_sq_err_cc / total_samples) * 100.0;
@@ -345,6 +345,7 @@ void setup()
   runDatasetTest("h-DCC-4.4A-2.5V.csv", "discharge");
   runDatasetTest("h-Dynamic_Profiling_(Urban Load).csv", "discharge");
   runDatasetTest("h-charging_7.33A-rest 2h.csv", "mixed");
+  runDatasetTest("h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv", "mixed"); // Dataset ke-5
 
   // =======================================================
   // CETAK TABEL REKAPITULASI FINAL YANG SUDAH DIRAPIKAN
@@ -389,11 +390,13 @@ void setup()
   Serial.println("| :--- | :---: | :---: | :---: |");
 
   // Format array nama file agar sesuai markdown awal
-  String display_names[4] = {
+  String display_names[5] = {
       "Pengujian Charging (C-CV)",
       "Pengujian Discharging (D-CC)",
       "Pengujian Pembebanan Dinamis (Urban Load)",
-      "Pengujian Mixed (D-CC & C-CV 7.33A)"};
+      "Pengujian Mixed (D-CC & C-CV 7.33A)",
+      "Pengujian Siklus Penuh (D-CC -> C-CV -> D-CC)" // Label untuk Dataset ke-5
+  };
 
   for (int i = 0; i < result_index; i++)
   {
