@@ -49,19 +49,19 @@ const float lut_c1[LUT_ECM_SIZE] = {
     19607.70, 15177.97, 16580.74, 24189.08};
 
 // =========================================================
-// 3. TUNING NOISE PARAMETER EKF (SIMULASI B REVISI)
+// 3. TUNING NOISE PARAMETER EKF (SIMULASI A)
 // =========================================================
-const float Q_NOISE_00 = 5e-6; // Diperbesar dari 1e-7 agar SOC lebih responsif
-const float Q_NOISE_11 = 5e-4; // Diperbesar agar Vc1 cepat menyerap error tegangan dinamis
+const float Q_NOISE_00 = 1e-7;
+const float Q_NOISE_11 = 1e-5;
 
-const float R_NOISE = 1e-2; // Diturunkan dari 5e-2. Nilai tunggal 0.01
+const float R_NOISE = 5e-2;   // Nilai tunggal 0.05
 
 // =========================================================
 // 4. VARIABEL STATE ESTIMATION
 // =========================================================
 float soc_cc = 0.0;
 float ekf_x[2] = {0.0, 0.0};
-float ekf_P[2][2] = {{0.1, 0.0}, {0.0, 0.1}}; // Diubah untuk Simulasi B Revisi (dari 0.01)
+float ekf_P[2][2] = {{0.01, 0.0}, {0.0, 0.01}}; // Diubah untuk Simulasi A
 
 float v_pred_last = 0.0;
 float soc_true = 0.0;
@@ -270,11 +270,11 @@ void runDatasetTest(String filename, String mode)
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
 
-      // Inisialisasi P_init sesuai Simulasi B Revisi
-      ekf_P[0][0] = 0.1;
+      // Inisialisasi P_init sesuai Simulasi A
+      ekf_P[0][0] = 0.01;
       ekf_P[0][1] = 0.0;
       ekf_P[1][0] = 0.0;
-      ekf_P[1][1] = 0.1;
+      ekf_P[1][1] = 0.01;
     }
 
     soc_true = constrain(soc_true - (current * dt / Q_COULOMB), 0.0, 1.0);
@@ -358,14 +358,14 @@ void setup()
   Serial.printf(" - Q_NOISE_00 (Arus) : %e\n", Q_NOISE_00);
   Serial.printf(" - Q_NOISE_11 (Pola) : %e\n", Q_NOISE_11);
   Serial.printf(" - R_NOISE (Tunggal) : %f\n", R_NOISE);
-  Serial.println(" - P_init (Awal)     : [[0.1, 0.0], [0.0, 0.1]]");
+  Serial.println(" - P_init (Awal)     : [[0.01, 0.0], [0.0, 0.01]]");
   Serial.println("===========================================================================\n");
 
   // =======================================================
   // CETAK FORMAT MARKDOWN UNTUK COPY-PASTE DOKUMENTASI
   // =======================================================
   Serial.println("\n\n<!-- COPY MULAI DARI BAWAH INI -->");
-  Serial.println("## Tabel Hasil Perhitungan RMSE Simulasi-B Revisi (PiL ESP32)");
+  Serial.println("## Tabel Hasil Perhitungan RMSE Simulasi-A (PiL ESP32)");
   Serial.println("Berdasarkan simulasi Processor-in-the-Loop (PiL) di ESP32, sistem algoritma diberikan nilai start awal yang sedikit *meleset* dari State of Charge sebenarnya (mensimulasikan *memory loss* di ESP32). Berikut adalah perbandingan tingkat error (RMSE) antara metode Coulomb Counting (CC) dan Extended Kalman Filter (EKF):");
   Serial.println("\n| Skenario Pengujian | RMSE SoC (CC) | RMSE SoC (EKF) | RMSE Tegangan (EKF) |");
   Serial.println("| :--- | :---: | :---: | :---: |");
@@ -386,13 +386,13 @@ void setup()
                   final_results[i].rmse_v);
   }
 
-  Serial.println("\n### Parameter Tuning EKF yang Digunakan (Simulasi B Revisi)");
+  Serial.println("\n### Parameter Tuning EKF yang Digunakan (Simulasi A)");
   Serial.println("* **Q Matriks (Process Noise):**");
   Serial.printf("  * `Q_00` (Noise Arus) : %e\n", Q_NOISE_00);
   Serial.printf("  * `Q_11` (Noise Polarisasi) : %e\n", Q_NOISE_11);
   Serial.println("* **R Matriks (Measurement Noise):**");
   Serial.printf("  * `R_NOISE` (Tunggal) : %f\n", R_NOISE);
-  Serial.println("* **P_init (Initial Error Covariance):** `P[0][0]` = 0.1, `P[1][1]` = 0.1");
+  Serial.println("* **P_init (Initial Error Covariance):** `P[0][0]` = 0.01, `P[1][1]` = 0.01");
   Serial.println("<!-- COPY SAMPAI SINI -->\n");
 }
 
