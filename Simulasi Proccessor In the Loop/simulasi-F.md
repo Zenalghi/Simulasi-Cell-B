@@ -1,15 +1,15 @@
 
-# Hasil Pengujian PiL ESP32 (Hardware-in-the-Loop)
+## Tabel Hasil Perhitungan RMSE Simulasi-F (PiL ESP32)
+Berdasarkan simulasi Processor-in-the-Loop (PiL) di ESP32, sistem algoritma diberikan nilai start awal yang sedikit *meleset* dari State of Charge sebenarnya (mensimulasikan *memory loss* di ESP32). Berikut adalah perbandingan tingkat error (RMSE) antara metode Coulomb Counting (CC) dan Extended Kalman Filter (EKF):
 
-## 1. Tabel Hasil Perhitungan RMSE
 | Skenario Pengujian | RMSE SoC (CC) | RMSE SoC (EKF) | RMSE Tegangan (EKF) |
 | :--- | :---: | :---: | :---: |
-| h-charge_rest_60m.cs | 4.2480% | 1.5561% | 17.6450 mV |
-| h-DCC-4.4A-2.5V.csv | 9.6584% | 4.7076% | 4.6884 mV |
-| h-Dynamic_Profiling_ | 9.0987% | 2.1507% | 5.7418 mV |
-| h-charging_7.33A-res | 0.3607% | 0.6218% | 16.4336 mV |
+| Pengujian Charging (C-CV) | 4.2480% | 1.5561% | 17.6450 mV |
+| Pengujian Discharging (D-CC) | 9.6584% | 4.7076% | 4.6884 mV |
+| Pengujian Pembebanan Dinamis (Urban Load) | 9.0987% | 2.1507% | 5.7418 mV |
+| Pengujian Mixed (D-CC & C-CV 7.33A) | 0.3607% | 0.6218% | 16.4336 mV |
 
-## 2. Parameter Tuning EKF yang Digunakan
+### Parameter Tuning EKF yang Digunakan (Simulasi F - Optimasi Final)
 * **Q Matriks (Process Noise):**
   * `Q_00` (Noise Arus) : 1.000000e-07
   * `Q_11` (Noise Polarisasi) : 5.000000e-04

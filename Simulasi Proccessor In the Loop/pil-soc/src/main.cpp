@@ -49,19 +49,21 @@ const float lut_c1[LUT_ECM_SIZE] = {
     19607.70, 15177.97, 16580.74, 24189.08};
 
 // =========================================================
-// 3. TUNING NOISE PARAMETER EKF (SIMULASI A)
+// 3. TUNING NOISE PARAMETER EKF (SIMULASI F)
 // =========================================================
 const float Q_NOISE_00 = 1e-7;
-const float Q_NOISE_11 = 1e-5;
+const float Q_NOISE_11 = 5e-4; // Diubah untuk Simulasi F
 
-const float R_NOISE = 5e-2;   // Nilai tunggal 0.05
+// R adaptif yang dipertajam:
+const float R_NOISE_CHARGE = 0.06;     // Ekstra skeptis pada sensor saat saturasi Charging
+const float R_NOISE_DISCHARGE = 0.005; // Ekstra tajam saat Discharge/Rest
 
 // =========================================================
 // 4. VARIABEL STATE ESTIMATION
 // =========================================================
 float soc_cc = 0.0;
 float ekf_x[2] = {0.0, 0.0};
-float ekf_P[2][2] = {{0.01, 0.0}, {0.0, 0.01}}; // Diubah untuk Simulasi A
+float ekf_P[2][2] = {{0.1, 0.0}, {0.0, 0.01}}; // Diubah untuk Simulasi F
 
 float v_pred_last = 0.0;
 float soc_true = 0.0;
@@ -153,9 +155,11 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   float h0 = dOCV_dSOC;
   float h1 = -1.0f;
 
-  // Gunakan R_NOISE tunggal, bukan adaptif
+  // Gunakan R_NOISE adaptif
+  float R_eff = (I_meas < 0.0f) ? R_NOISE_CHARGE : R_NOISE_DISCHARGE;
+
   float S = (h0 * h0 * P_pred[0][0]) + (h0 * h1 * P_pred[0][1]) +
-            (h1 * h0 * P_pred[1][0]) + (h1 * h1 * P_pred[1][1]) + R_NOISE;
+            (h1 * h0 * P_pred[1][0]) + (h1 * h1 * P_pred[1][1]) + R_eff;
 
   float K[2];
   K[0] = ((P_pred[0][0] * h0) + (P_pred[0][1] * h1)) / S;
@@ -177,10 +181,10 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   Temp[1][0] = I_KH[1][0] * P_pred[0][0] + I_KH[1][1] * P_pred[1][0];
   Temp[1][1] = I_KH[1][0] * P_pred[0][1] + I_KH[1][1] * P_pred[1][1];
 
-  ekf_P[0][0] = Temp[0][0] * I_KH[0][0] + Temp[0][1] * I_KH[0][1] + (K[0] * K[0] * R_NOISE);
-  ekf_P[0][1] = Temp[0][0] * I_KH[1][0] + Temp[0][1] * I_KH[1][1] + (K[0] * K[1] * R_NOISE);
-  ekf_P[1][0] = Temp[1][0] * I_KH[0][0] + Temp[1][1] * I_KH[0][1] + (K[1] * K[0] * R_NOISE);
-  ekf_P[1][1] = Temp[1][0] * I_KH[1][0] + Temp[1][1] * I_KH[1][1] + (K[1] * K[1] * R_NOISE);
+  ekf_P[0][0] = Temp[0][0] * I_KH[0][0] + Temp[0][1] * I_KH[0][1] + (K[0] * K[0] * R_eff);
+  ekf_P[0][1] = Temp[0][0] * I_KH[1][0] + Temp[0][1] * I_KH[1][1] + (K[0] * K[1] * R_eff);
+  ekf_P[1][0] = Temp[1][0] * I_KH[0][0] + Temp[1][1] * I_KH[0][1] + (K[1] * K[0] * R_eff);
+  ekf_P[1][1] = Temp[1][0] * I_KH[1][0] + Temp[1][1] * I_KH[1][1] + (K[1] * K[1] * R_eff);
 }
 
 // =========================================================
@@ -270,8 +274,8 @@ void runDatasetTest(String filename, String mode)
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
 
-      // Inisialisasi P_init sesuai Simulasi A
-      ekf_P[0][0] = 0.01;
+      // Inisialisasi P_init sesuai Simulasi F
+      ekf_P[0][0] = 0.1;
       ekf_P[0][1] = 0.0;
       ekf_P[1][0] = 0.0;
       ekf_P[1][1] = 0.01;
@@ -290,7 +294,7 @@ void runDatasetTest(String filename, String mode)
 
     total_samples++;
 
-    if (total_samples % 3000 == 0)
+    if (total_samples % 1000 == 0)
     {
       Serial.printf("       -> Progres EKF: Baris ke-%ld diproses...\n", total_samples);
     }
@@ -357,15 +361,16 @@ void setup()
   Serial.println("===========================================================================");
   Serial.printf(" - Q_NOISE_00 (Arus) : %e\n", Q_NOISE_00);
   Serial.printf(" - Q_NOISE_11 (Pola) : %e\n", Q_NOISE_11);
-  Serial.printf(" - R_NOISE (Tunggal) : %f\n", R_NOISE);
-  Serial.println(" - P_init (Awal)     : [[0.01, 0.0], [0.0, 0.01]]");
+  Serial.printf(" - R_CHARGE (CV)     : %f\n", R_NOISE_CHARGE);
+  Serial.printf(" - R_DISCHARGE       : %f\n", R_NOISE_DISCHARGE);
+  Serial.println(" - P_init (Awal)     : [[0.1, 0.0], [0.0, 0.01]]");
   Serial.println("===========================================================================\n");
 
   // =======================================================
   // CETAK FORMAT MARKDOWN UNTUK COPY-PASTE DOKUMENTASI
   // =======================================================
   Serial.println("\n\n<!-- COPY MULAI DARI BAWAH INI -->");
-  Serial.println("## Tabel Hasil Perhitungan RMSE Simulasi-A (PiL ESP32)");
+  Serial.println("## Tabel Hasil Perhitungan RMSE Simulasi-F (PiL ESP32)");
   Serial.println("Berdasarkan simulasi Processor-in-the-Loop (PiL) di ESP32, sistem algoritma diberikan nilai start awal yang sedikit *meleset* dari State of Charge sebenarnya (mensimulasikan *memory loss* di ESP32). Berikut adalah perbandingan tingkat error (RMSE) antara metode Coulomb Counting (CC) dan Extended Kalman Filter (EKF):");
   Serial.println("\n| Skenario Pengujian | RMSE SoC (CC) | RMSE SoC (EKF) | RMSE Tegangan (EKF) |");
   Serial.println("| :--- | :---: | :---: | :---: |");
@@ -386,13 +391,14 @@ void setup()
                   final_results[i].rmse_v);
   }
 
-  Serial.println("\n### Parameter Tuning EKF yang Digunakan (Simulasi A)");
+  Serial.println("\n### Parameter Tuning EKF yang Digunakan (Simulasi F - Optimasi Final)");
   Serial.println("* **Q Matriks (Process Noise):**");
   Serial.printf("  * `Q_00` (Noise Arus) : %e\n", Q_NOISE_00);
   Serial.printf("  * `Q_11` (Noise Polarisasi) : %e\n", Q_NOISE_11);
-  Serial.println("* **R Matriks (Measurement Noise):**");
-  Serial.printf("  * `R_NOISE` (Tunggal) : %f\n", R_NOISE);
-  Serial.println("* **P_init (Initial Error Covariance):** `P[0][0]` = 0.01, `P[1][1]` = 0.01");
+  Serial.println("* **R Matriks (Measurement Noise - Adaptive):**");
+  Serial.printf("  * `R_CHARGE` (Skeptis saat CV) : %f\n", R_NOISE_CHARGE);
+  Serial.printf("  * `R_DISCHARGE` (Tajam saat kuras) : %f\n", R_NOISE_DISCHARGE);
+  Serial.println("* **P_init (Initial Error Covariance):** `P[0][0]` = 0.1, `P[1][1]` = 0.01");
   Serial.println("<!-- COPY SAMPAI SINI -->\n");
 }
 
