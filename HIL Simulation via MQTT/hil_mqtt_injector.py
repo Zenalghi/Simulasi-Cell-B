@@ -7,7 +7,8 @@ import os
 # =========================================================
 # 1. KONFIGURASI MQTT BROKER UMUM
 # =========================================================
-MQTT_BROKER = "broker.mqtt.cool"
+# MQTT_BROKER = "broker.mqtt.cool"
+MQTT_BROKER = "broker.emqx.io"
 MQTT_PORT = 1883
 
 # =========================================================
@@ -24,21 +25,34 @@ if pilihan == '1':
     file_path = r"HIL Simulation via MQTT\charge-rest 60m.csv"
     TOPIC_INJECT = "bms_panel/2602165/data/main"
     CLIENT_ID = "Laptop_Injector"
+    # Nilai SOC Bawaan Awal
+    soc_awal = 0
+    cap_awal = 0.00
 elif pilihan == '2':
     file_path = r"HIL Simulation via MQTT\DCC 4.4A, 2.5V.csv"
     TOPIC_INJECT = "batteryss/54673/data/main"
     CLIENT_ID = "Laptop2-injector"
+    # Nilai SOC Bawaan Awal
+    soc_awal = 99
+    cap_awal = 20.798555
 elif pilihan == '3':
     file_path = r"HIL Simulation via MQTT\Dynamic Profiling (Urban Load).csv"
     TOPIC_INJECT = "bms_panel/2602165/data/main"
     CLIENT_ID = "Laptop3-injector"
+    # Nilai SOC Bawaan Awal
+    soc_awal = 94.14
+    cap_awal = 19.777 # Hasil perhitungan: (20.798555 / 0.99) * 0.9414
 else:
     print("Pilihan tidak valid!")
     exit()
 
+# Membuat Topic SOC secara dinamis menyesuaikan device yang dipilih
+TOPIC_SOC_BAWAAN = TOPIC_INJECT.replace("/main", "/soc_bawaan")
+
 print(f"\nMemuat dataset: {file_path}")
 print(f"Menggunakan Client ID: {CLIENT_ID}")
-print(f"Target Topik MQTT: {TOPIC_INJECT}")
+print(f"Target Topik Utama: {TOPIC_INJECT}")
+print(f"Target Topik SOC Bawaan: {TOPIC_SOC_BAWAAN}")
 
 # =========================================================
 # 3. KONEKSI MQTT (Dilakukan setelah skenario dipilih)
@@ -59,7 +73,24 @@ if not os.path.exists(file_path):
     exit()
 
 # =========================================================
-# 4. AUTO-SKIP ZKETECH METADATA
+# 4. KIRIM SOC BAWAAN AWAL (1-3x)
+# =========================================================
+print("\n--- Mengirim Status SOC Bawaan (Awal) ---")
+payload_soc = {
+    "soc_jk": soc_awal,
+    "capacity_remain": cap_awal
+}
+
+# Kirim 3 kali untuk memastikan data tidak drop
+for i in range(3):
+    client.publish(TOPIC_SOC_BAWAAN, json.dumps(payload_soc))
+    print(f"[{CLIENT_ID}] Kirim SOC Awal ke-{i+1}: {payload_soc}")
+    time.sleep(1) # Jeda 1 detik antar pengiriman
+print("Selesai mengirim SOC Bawaan.\n")
+
+
+# =========================================================
+# 5. AUTO-SKIP ZKETECH METADATA
 # =========================================================
 # Kita cari baris ke berapa yang mengandung "Time(S),Cur(A),Vol(V)"
 header_row = 0
@@ -83,11 +114,11 @@ except Exception as e:
 col_v = 'Vol(V)' 
 col_i = 'Cur(A)'
 
-print("Memulai Injeksi Data ke ESP32 dalam 3 detik...")
+print("Memulai Injeksi Data Utama ke ESP32 dalam 3 detik...\n")
 time.sleep(3)
 
 # =========================================================
-# 5. LOOP INJEKSI DATA (SIMULASI WAKTU NYATA)
+# 6. LOOP INJEKSI DATA (SIMULASI WAKTU NYATA)
 # =========================================================
 for index, row in df.iterrows():
     v_meas = float(row[col_v])

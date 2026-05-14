@@ -202,13 +202,13 @@ void runEKFStep(float I_meas, float V_meas, float dt)
 // =========================================================
 // 6. RUNNER PROCESSOR-IN-THE-LOOP (PiL)
 // =========================================================
-void runDatasetTest(String filename, String mode)
+bool runDatasetTest(String filename, String mode)
 {
   File file = LittleFS.open("/" + filename, "r");
   if (!file)
   {
-    Serial.printf("[ERROR] Gagal membuka file %s\n", filename.c_str());
-    return;
+    Serial.printf("[ERROR] Gagal membuka file %s. Menghentikan proses pengujian.\n", filename.c_str());
+    return false; // Mengembalikan false jika file tidak ditemukan
   }
 
   Serial.printf("[INFO] Menguji Dataset: %s (Mode: %s)\n", filename.c_str(), mode.c_str());
@@ -322,6 +322,8 @@ void runDatasetTest(String filename, String mode)
     result_index++;
   }
   Serial.println("[INFO] Eksekusi Selesai.\n");
+
+  return true; // Berhasil dieksekusi
 }
 
 void setup()
@@ -341,11 +343,17 @@ void setup()
 
   result_index = 0;
 
-  runDatasetTest("h-charge_rest_60m.csv", "charge");
-  runDatasetTest("h-DCC-4.4A-2.5V.csv", "discharge");
-  runDatasetTest("h-Dynamic_Profiling_(Urban Load).csv", "discharge");
-  runDatasetTest("h-charging_7.33A-rest 2h.csv", "mixed");
-  runDatasetTest("h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv", "mixed"); // Dataset ke-5
+  // Jika salah satu dataset gagal dibuka, keluar dari setup dan hentikan proses.
+  if (!runDatasetTest("h-charge_rest_60m.csv", "charge"))
+    return;
+  if (!runDatasetTest("h-DCC-4.4A-2.5V.csv", "discharge"))
+    return;
+  if (!runDatasetTest("h-Dynamic_Profiling_(Urban Load).csv", "discharge"))
+    return;
+  if (!runDatasetTest("h-charging_7.33A-rest 2h.csv", "mixed"))
+    return;
+  if (!runDatasetTest("h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv", "mixed"))
+    return;
 
   // =======================================================
   // CETAK TABEL REKAPITULASI FINAL YANG SUDAH DIRAPIKAN
