@@ -9,7 +9,7 @@ Q_Ah_Nominal,20.798555555555552,Ah,Kapasitas nominal baterai
 
 Q_As,74874.79999999999,As,Kapasitas dalam ampere-sekon
 
-SOC_Initial,0.9414318036172206,decimal (0-1),SOC awal berdasarkan invers OCV-LUT
+SOC_Initial,0.9414318036172206,decimal (0-1),SOC awal berdasarkan invers OCV-LUT. gaperlu ini karena sudah diinisialisasi di kode EKF
 
 Q_noise_00,1e-06,V^2,Process noise untuk SOC
 
