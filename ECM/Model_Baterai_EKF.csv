@@ -11,6 +11,7 @@ Q_As,74874.79999999999,As,Kapasitas dalam ampere-sekon
 
 SOC_Initial,0.9414318036172206,decimal (0-1),SOC awal berdasarkan invers OCV-LUT. gaperlu ini karena sudah diinisialisasi di kode EKF
 
+Ikuti simulasi terbaru pada simulasi processor in the loop untuk memastikan konsistensi dengan parameter ini.
 Q_noise_00,1e-06,V^2,Process noise untuk SOC
 
 Q_noise_11,0.0001,V^2,Process noise untuk V_RC
