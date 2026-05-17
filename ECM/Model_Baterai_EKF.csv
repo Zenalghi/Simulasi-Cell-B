@@ -1,6 +1,6 @@
 # Model Baterai LiFePO4 - Format CSV untuk Python
-# Dibuat dari notebook ecm_ekf_final_v4.ipynb
-# Tanggal: 2026-03-04 03:31:40
+# Dibuat dari notebook ecm_ekf_final_v5.ipynb
+# Tanggal: 2026-05-17 21:52:34
 
 === BATTERY PARAMETERS ===
 Parameter,Value,Unit,Description
@@ -9,9 +9,8 @@ Q_Ah_Nominal,20.798555555555552,Ah,Kapasitas nominal baterai
 
 Q_As,74874.79999999999,As,Kapasitas dalam ampere-sekon
 
-SOC_Initial,0.9414318036172206,decimal (0-1),SOC awal berdasarkan invers OCV-LUT. gaperlu ini karena sudah diinisialisasi di kode EKF
+SOC_Initial,0.9414318036172206,decimal (0-1),SOC awal berdasarkan invers OCV-LUT
 
-Ikuti simulasi terbaru pada simulasi processor in the loop untuk memastikan konsistensi dengan parameter ini.
 Q_noise_00,1e-06,V^2,Process noise untuk SOC
 
 Q_noise_11,0.0001,V^2,Process noise untuk V_RC
@@ -87,6 +86,3 @@ SOC_percent,R0_ohm,R1_ohm,C1_farad,Tau_s
 77.27873730547526,0.0021999999999999797,0.0023458492918533797,16580.74023587785,38.89591774073889
 
 88.64304145052809,0.0028000000000000026,0.0026842660966356876,24189.0892443132,64.92995216700488
-
-
-
