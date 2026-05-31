@@ -12,28 +12,27 @@ struct TestResult
   float rmse_ekf;
   float rmse_v;
 };
-TestResult final_results[5]; // Diubah menjadi 5 untuk menampung dataset baru
+TestResult final_results[5];
 int result_index = 0;
 
 // =========================================================
-// 2. PARAMETER MODEL BATERAI (Cubic Spline 21 Titik)
+// 2. PARAMETER MODEL BATERAI (Polinomial Orde 6 & ECM)
 // =========================================================
 const float Q_AH = 20.798555;
-const float Q_COULOMB = Q_AH * 3600.0;
+const float Q_COULOMB = 74874.8; // Kapasitas As (Ampere-sekon)
 
-const int LUT_OCV_SIZE = 21;
-const float lut_soc_ocv[LUT_OCV_SIZE] = {
-    0.00, 0.05, 0.10, 0.15, 0.20,
-    0.25, 0.30, 0.35, 0.40, 0.45,
-    0.50, 0.55, 0.60, 0.65, 0.70,
-    0.75, 0.80, 0.85, 0.90, 0.95, 1.00};
+// Koefisien Polinomial Orde 6 (Dari Python)
+const float P_COEF[7] = {
+    2.664967,    // p0
+    9.485166,    // p1
+    -58.074182,  // p2
+    169.872070,  // p3
+    -250.913864, // p4
+    179.845768,  // p5
+    -49.353787   // p6
+};
 
-const float lut_ocv[LUT_OCV_SIZE] = {
-    2.655, 3.050, 3.194, 3.210, 3.220,
-    3.232, 3.245, 3.258, 3.270, 3.282,
-    3.285, 3.287, 3.288, 3.289, 3.291,
-    3.294, 3.300, 3.310, 3.331, 3.385, 3.537};
-
+// Parameter ECM (1-RC Thevenin)
 const int LUT_ECM_SIZE = 9;
 const float lut_soc_ecm[LUT_ECM_SIZE] = {
     0.0, 0.090902, 0.204618, 0.318054, 0.431697,
@@ -49,15 +48,11 @@ const float lut_c1[LUT_ECM_SIZE] = {
     19607.70, 15177.97, 16580.74, 24189.08};
 
 // =========================================================
-// 3. TUNING NOISE PARAMETER EKF (SIMULASI G)
+// 3. TUNING NOISE PARAMETER EKF
 // =========================================================
-const float Q_NOISE_00 = 1e-7;
-const float Q_NOISE_11 = 5e-4;
-
-// R adaptif tiga-state: REST paling tajam, DISCHARGE tajam, CHARGE skeptis saat CV
-const float R_NOISE_CHARGE = 0.035;
-const float R_NOISE_DISCHARGE = 0.004;
-const float R_NOISE_REST = 0.0008;
+const float Q_NOISE_00 = 1e-6;     // Process noise SOC
+const float Q_NOISE_11 = 1e-4;     // Process noise V_RC
+const float R_NOISE_BASE = 0.0002; // Measurement noise sensor tegangan
 
 // =========================================================
 // 4. VARIABEL STATE ESTIMATION
@@ -75,7 +70,7 @@ double sum_sq_err_ekf_v = 0;
 long total_samples = 0;
 
 // =========================================================
-// 5. FUNGSI MATEMATIKA: INTERPOLASI & EKF
+// 5. FUNGSI MATEMATIKA: INTERPOLASI & POLINOMIAL EKF
 // =========================================================
 float interpolate1D(float x, const float *x_data, const float *y_data, int size)
 {
@@ -94,38 +89,36 @@ float interpolate1D(float x, const float *x_data, const float *y_data, int size)
   return y_data[0];
 }
 
-float get_SOC_from_OCV(float ocv_val)
+// Fungsi OCV menggunakan Polinomial Orde 6
+float get_OCV_from_Polynomial(float soc)
 {
-  if (ocv_val <= lut_ocv[0])
-    return lut_soc_ocv[0];
-  if (ocv_val >= lut_ocv[LUT_OCV_SIZE - 1])
-    return lut_soc_ocv[LUT_OCV_SIZE - 1];
-  for (int i = 0; i < LUT_OCV_SIZE - 1; i++)
-  {
-    if (ocv_val >= lut_ocv[i] && ocv_val <= lut_ocv[i + 1])
-    {
-      float t = (ocv_val - lut_ocv[i]) / (lut_ocv[i + 1] - lut_ocv[i]);
-      return lut_soc_ocv[i] + t * (lut_soc_ocv[i + 1] - lut_soc_ocv[i]);
-    }
-  }
-  return lut_soc_ocv[0];
+  return P_COEF[0] +
+         (P_COEF[1] * soc) +
+         (P_COEF[2] * pow(soc, 2)) +
+         (P_COEF[3] * pow(soc, 3)) +
+         (P_COEF[4] * pow(soc, 4)) +
+         (P_COEF[5] * pow(soc, 5)) +
+         (P_COEF[6] * pow(soc, 6));
 }
 
-float get_dOCV_dSOC(float soc)
+// Jacobian (Turunan Parsial OCV terhadap SOC) menggunakan Polinomial
+float get_dOCV_dSOC_Polynomial(float soc)
 {
-  float delta = 0.001;
-  float s_high = min(soc + delta, 1.0f);
-  float s_low = max(soc - delta, 0.0f);
-  float ocv_high = interpolate1D(s_high, lut_soc_ocv, lut_ocv, LUT_OCV_SIZE);
-  float ocv_low = interpolate1D(s_low, lut_soc_ocv, lut_ocv, LUT_OCV_SIZE);
-  float derivative = (ocv_high - ocv_low) / (s_high - s_low);
-  return max(derivative, 0.05f);
+  float derivative = P_COEF[1] +
+                     (2.0f * P_COEF[2] * soc) +
+                     (3.0f * P_COEF[3] * pow(soc, 2)) +
+                     (4.0f * P_COEF[4] * pow(soc, 3)) +
+                     (5.0f * P_COEF[5] * pow(soc, 4)) +
+                     (6.0f * P_COEF[6] * pow(soc, 5));
+  return max(derivative, 0.01f); // Mencegah nilai nol atau negatif
 }
 
 void runEKFStep(float I_meas, float V_meas, float dt)
 {
+  // 1. Coulomb Counting (Tanpa Feedback)
   soc_cc = constrain(soc_cc - (I_meas * dt / Q_COULOMB), 0.0, 1.0);
 
+  // 2. EKF: Time Update (Prediction)
   float soc_prev = constrain(ekf_x[0], 0.0, 1.0);
   float vc1_prev = ekf_x[1];
 
@@ -147,28 +140,22 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   P_pred[1][0] = ekf_P[1][0] * alpha;
   P_pred[1][1] = (alpha * alpha * ekf_P[1][1]) + Q_NOISE_11;
 
-  float OCV_pred = interpolate1D(soc_pred, lut_soc_ocv, lut_ocv, LUT_OCV_SIZE);
-  float dOCV_dSOC = get_dOCV_dSOC(soc_pred);
+  // 3. EKF: Measurement Update (Correction)
+  float OCV_pred = get_OCV_from_Polynomial(soc_pred);
+  float dOCV_dSOC = get_dOCV_dSOC_Polynomial(soc_pred);
 
   float V_pred = OCV_pred - vc1_pred - (I_meas * R0);
   v_pred_last = V_pred;
 
+  // Jacobian Matrix H
   float h0 = dOCV_dSOC;
   float h1 = -1.0f;
 
-  float R_eff;
-  if (fabsf(I_meas) < 0.05f)
-  {
-    R_eff = R_NOISE_REST; // Fase REST: tegangan = OCV murni, sangat dipercaya
-  }
-  else if (I_meas < 0.0f)
-  {
-    R_eff = R_NOISE_CHARGE; // Fase CHARGING: skeptis di area saturasi CV
-  }
-  else
-  {
-    R_eff = R_NOISE_DISCHARGE; // Fase DISCHARGE: tajam, sensor handal
-  }
+  float R_eff = R_NOISE_BASE;
+  if (I_meas < 0.0f)
+    R_eff *= 50.0f; // Lebih skeptis saat tegangan saturasi charge
+  else if (I_meas > 0.01f)
+    R_eff *= 10.0f;
 
   float S = (h0 * h0 * P_pred[0][0]) + (h0 * h1 * P_pred[0][1]) +
             (h1 * h0 * P_pred[1][0]) + (h1 * h1 * P_pred[1][1]) + R_eff;
@@ -207,11 +194,11 @@ bool runDatasetTest(String filename, String mode)
   File file = LittleFS.open("/" + filename, "r");
   if (!file)
   {
-    Serial.printf("[ERROR] Gagal membuka file %s. Menghentikan proses pengujian.\n", filename.c_str());
-    return false; // Mengembalikan false jika file tidak ditemukan
+    Serial.printf("[ERROR] Gagal membuka file %s.\n", filename.c_str());
+    return false;
   }
 
-  Serial.printf("[INFO] Menguji Dataset: %s (Mode: %s)\n", filename.c_str(), mode.c_str());
+  Serial.printf("[INFO] Menguji Dataset: %s\n", filename.c_str());
 
   while (file.available())
   {
@@ -249,51 +236,63 @@ bool runDatasetTest(String filename, String mode)
     float voltage = atof(v_str);
 
     if (mode == "charge")
-    {
       current = -abs(current);
-    }
     else if (mode == "discharge")
-    {
       current = abs(current);
-    }
     else if (mode == "mixed")
     {
       if (voltage <= 2.65)
         is_charging_phase = true;
       if (current > 0.01)
-      {
         current = is_charging_phase ? -abs(current) : abs(current);
-      }
       else
-      {
         current = 0.0;
-      }
     }
 
-    float dt = (time_prev < 0) ? 1.0 : (time_s - time_prev);
-    if (dt <= 0)
-      dt = 1.0;
+    float dt = (time_prev < 0) ? 0.0 : (time_s - time_prev);
+
+    // PENYESUAIAN 1: Lewati baris jika waktu tidak maju (duplikasi detik ke-0 dari ZKETECH)
+    if (time_prev >= 0 && dt <= 0)
+    {
+      continue;
+    }
+
     time_prev = time_s;
 
+    // === PERBAIKAN INISIALISASI STARTING SOC ===
     if (total_samples == 0)
     {
-      soc_true = get_SOC_from_OCV(voltage);
-      float soc_algo_start = soc_true - 0.10;
-      if (soc_algo_start < 0)
-        soc_algo_start = 0.05;
+      if (filename == "h-charge_rest_60m.csv")
+        soc_true = 0.0;
+      else if (filename == "h-DCC-4.4A-2.5V.csv")
+        soc_true = 1.0;
+      else if (filename == "h-Dynamic_Profiling_(Urban Load).csv")
+        soc_true = 1.0;
+      else if (filename == "h-charging_7.33A-rest 2h.csv")
+        soc_true = 0.05; // 3.06V
+      else if (filename == "h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv")
+        soc_true = 0.0; // 2.71V
+
+      // Simulasi "Memory Loss" 10%
+      float soc_algo_start = (soc_true < 0.10) ? (soc_true + 0.10) : (soc_true - 0.10);
 
       soc_cc = soc_algo_start;
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
 
-      // Inisialisasi P_init sesuai Simulasi G
       ekf_P[0][0] = 0.1;
       ekf_P[0][1] = 0.0;
       ekf_P[1][0] = 0.0;
       ekf_P[1][1] = 0.01;
-    }
 
+      // Karena ini sampel pertama (dt=0), kita hanya inisialisasi dan lewati integral
+      total_samples++;
+      continue;
+    }
+    // Integritas data sebenarnya
     soc_true = constrain(soc_true - (current * dt / Q_COULOMB), 0.0, 1.0);
+
+    // Eksekusi State Estimation
     runEKFStep(current, voltage, dt);
 
     double err_cc = soc_cc - soc_true;
@@ -305,11 +304,6 @@ bool runDatasetTest(String filename, String mode)
     sum_sq_err_ekf_v += (err_v * err_v);
 
     total_samples++;
-
-    if (total_samples % 3000 == 0)
-    {
-      Serial.printf("       -> Progres EKF: Baris ke-%ld diproses...\n", total_samples);
-    }
   }
   file.close();
 
@@ -321,9 +315,9 @@ bool runDatasetTest(String filename, String mode)
     final_results[result_index].rmse_v = sqrt(sum_sq_err_ekf_v / total_samples) * 1000.0;
     result_index++;
   }
-  Serial.println("[INFO] Eksekusi Selesai.\n");
+  Serial.println("[INFO] Selesai.\n");
 
-  return true; // Berhasil dieksekusi
+  return true;
 }
 
 void setup()
@@ -332,7 +326,7 @@ void setup()
   delay(2000);
 
   Serial.println("\n\n===========================================================================");
-  Serial.println("           MEMULAI PENGUJIAN PROCESSOR-IN-THE-LOOP (PiL) ESP32             ");
+  Serial.println("            MEMULAI PENGUJIAN PROCESSOR-IN-THE-LOOP (PiL) ESP32            ");
   Serial.println("===========================================================================\n");
 
   if (!LittleFS.begin(true))
@@ -343,7 +337,6 @@ void setup()
 
   result_index = 0;
 
-  // Jika salah satu dataset gagal dibuka, keluar dari setup dan hentikan proses.
   if (!runDatasetTest("h-charge_rest_60m.csv", "charge"))
     return;
   if (!runDatasetTest("h-DCC-4.4A-2.5V.csv", "discharge"))
@@ -355,13 +348,9 @@ void setup()
   if (!runDatasetTest("h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv", "mixed"))
     return;
 
-  // =======================================================
-  // CETAK TABEL REKAPITULASI FINAL YANG SUDAH DIRAPIKAN
-  // =======================================================
   Serial.println("\n===========================================================================");
   Serial.println("| NAMA DATASET         | RMSE SoC (CC)  | RMSE SoC (EKF) | RMSE TEGANGAN  |");
   Serial.println("===========================================================================");
-
   for (int i = 0; i < result_index; i++)
   {
     Serial.printf("| %-20s | %10.4f %%   | %10.4f %%   | %9.4f mV   |\n",
@@ -370,60 +359,36 @@ void setup()
                   final_results[i].rmse_ekf,
                   final_results[i].rmse_v);
   }
-
   Serial.println("===========================================================================");
-  Serial.println("Pengujian PiL Selesai dengan Sukses!");
-
   // =======================================================
-  // CETAK PARAMETER EKF UNTUK LOG PENGUJIAN
-  // =======================================================
-  Serial.println("\n===========================================================================");
-  Serial.println("               PARAMETER MODEL & NOISE EKF YANG DIGUNAKAN                  ");
-  Serial.println("===========================================================================");
-  Serial.printf(" - Q_NOISE_00 (Arus) : %e\n", Q_NOISE_00);
-  Serial.printf(" - Q_NOISE_11 (Pola) : %e\n", Q_NOISE_11);
-  Serial.printf(" - R_CHARGE (CV)     : %f\n", R_NOISE_CHARGE);
-  Serial.printf(" - R_DISCHARGE       : %f\n", R_NOISE_DISCHARGE);
-  Serial.printf(" - R_REST (Fase OCV) : %f\n", R_NOISE_REST);
-  Serial.println(" - P_init (Awal)     : [[0.1, 0.0], [0.0, 0.01]]");
-  Serial.println("===========================================================================\n");
-
-  // =======================================================
-  // CETAK FORMAT MARKDOWN UNTUK COPY-PASTE DOKUMENTASI
+  // CETAK FORMAT MARKDOWN
   // =======================================================
   Serial.println("\n\n<!-- COPY MULAI DARI BAWAH INI -->");
-  Serial.println("## Tabel Hasil Perhitungan RMSE Simulasi-G (PiL ESP32)");
-  Serial.println("Berdasarkan simulasi Processor-in-the-Loop (PiL) di ESP32, sistem algoritma diberikan nilai start awal yang sedikit *meleset* dari State of Charge sebenarnya (mensimulasikan *memory loss* di ESP32). Berikut adalah perbandingan tingkat error (RMSE) antara metode Coulomb Counting (CC) dan Extended Kalman Filter (EKF):");
-  Serial.println("\n| Skenario Pengujian | RMSE SoC (CC) | RMSE SoC (EKF) | RMSE Tegangan (EKF) |");
+  Serial.println("## Tabel Hasil Perhitungan RMSE (PiL ESP32) dengan Polinomial Orde 6");
+  Serial.println("Berikut adalah perbandingan tingkat error (RMSE) antara metode Coulomb Counting (CC) dan Extended Kalman Filter (EKF) menggunakan pemodelan fungsi OCV berbasis polinomial orde 6:");
+  Serial.println("\n| NAMA DATASET | RMSE SoC (CC) | RMSE SoC (EKF) | RMSE Tegangan (EKF) |");
   Serial.println("| :--- | :---: | :---: | :---: |");
-
-  // Format array nama file agar sesuai markdown awal
-  String display_names[5] = {
-      "Pengujian Charging (C-CV)",
-      "Pengujian Discharging (D-CC)",
-      "Pengujian Pembebanan Dinamis (Urban Load)",
-      "Pengujian Mixed (D-CC & C-CV 7.33A)",
-      "Pengujian Siklus Penuh (D-CC -> C-CV -> D-CC)" // Label untuk Dataset ke-5
-  };
 
   for (int i = 0; i < result_index; i++)
   {
     Serial.printf("| %s | %.4f%% | %.4f%% | %.4f mV |\n",
-                  display_names[i].c_str(),
+                  final_results[i].filename.c_str(),
                   final_results[i].rmse_cc,
                   final_results[i].rmse_ekf,
                   final_results[i].rmse_v);
   }
 
-  Serial.println("\n### Parameter Tuning EKF yang Digunakan (Simulasi G - Tiga State)");
+  Serial.println("\n### Parameter Model & Tuning EKF yang Digunakan:");
+  Serial.println("* **Polinomial Orde 6 (OCV-SoC):**");
+  Serial.printf("  * `p0` = %f, `p1` = %f, `p2` = %f, `p3` = %f, `p4` = %f, `p5` = %f, `p6` = %f\n",
+                P_COEF[0], P_COEF[1], P_COEF[2], P_COEF[3], P_COEF[4], P_COEF[5], P_COEF[6]);
   Serial.println("* **Q Matriks (Process Noise):**");
   Serial.printf("  * `Q_00` (Noise Arus) : %e\n", Q_NOISE_00);
   Serial.printf("  * `Q_11` (Noise Polarisasi) : %e\n", Q_NOISE_11);
-  Serial.println("* **R Matriks (Measurement Noise - Adaptive):**");
-  Serial.printf("  * `R_CHARGE` (Skeptis saat CV) : %f\n", R_NOISE_CHARGE);
-  Serial.printf("  * `R_DISCHARGE` (Tajam saat kuras) : %f\n", R_NOISE_DISCHARGE);
-  Serial.printf("  * `R_REST` (Sangat tajam saat OCV) : %f\n", R_NOISE_REST);
+  Serial.println("* **R Matriks (Measurement Noise Base):**");
+  Serial.printf("  * `R_NOISE_BASE` : %f\n", R_NOISE_BASE);
   Serial.println("* **P_init (Initial Error Covariance):** `P[0][0]` = 0.1, `P[1][1]` = 0.01");
+  Serial.println("* **Simulasi Memory Loss:** Algoritma dimulai dengan *offset error* sebesar 10% untuk menguji kekokohan EKF.");
   Serial.println("<!-- COPY SAMPAI SINI -->\n");
 }
 
