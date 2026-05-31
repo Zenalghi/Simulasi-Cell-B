@@ -307,8 +307,8 @@ bool runDatasetTest(String filename, String mode)
     uint32_t t_end = micros();
     total_exec_time_us += (t_end - t_start);
 
-    double err_cc = soc_cc - soc_true;
-    double err_ekf = ekf_x[0] - soc_true;
+    double err_cc = soc_true - soc_cc;
+    double err_ekf = soc_true - ekf_x[0];
     double err_v = voltage - v_pred_last;
 
     sum_sq_err_cc += (err_cc * err_cc);
