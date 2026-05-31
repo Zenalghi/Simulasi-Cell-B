@@ -11,6 +11,8 @@ struct TestResult
   float rmse_cc;
   float rmse_ekf;
   float rmse_v;
+  float avg_exec_time_us;
+  uint32_t memory_used;
 };
 TestResult final_results[5];
 int result_index = 0;
@@ -212,6 +214,9 @@ bool runDatasetTest(String filename, String mode)
   sum_sq_err_ekf_v = 0;
   total_samples = 0;
 
+  uint64_t total_exec_time_us = 0;
+  uint32_t peak_memory_used = 0;
+
   float time_prev = -1.0;
   bool is_charging_phase = false;
   char buf[128];
@@ -292,8 +297,15 @@ bool runDatasetTest(String filename, String mode)
     // Integritas data sebenarnya
     soc_true = constrain(soc_true - (current * dt / Q_COULOMB), 0.0, 1.0);
 
-    // Eksekusi State Estimation
+    // Hitung memori terpakai saat iterasi
+    uint32_t current_used_heap = ESP.getHeapSize() - ESP.getFreeHeap();
+    if (current_used_heap > peak_memory_used) peak_memory_used = current_used_heap;
+
+    // Eksekusi State Estimation dengan pencatatan waktu CPU
+    uint32_t t_start = micros();
     runEKFStep(current, voltage, dt);
+    uint32_t t_end = micros();
+    total_exec_time_us += (t_end - t_start);
 
     double err_cc = soc_cc - soc_true;
     double err_ekf = ekf_x[0] - soc_true;
@@ -313,6 +325,8 @@ bool runDatasetTest(String filename, String mode)
     final_results[result_index].rmse_cc = sqrt(sum_sq_err_cc / total_samples) * 100.0;
     final_results[result_index].rmse_ekf = sqrt(sum_sq_err_ekf_soc / total_samples) * 100.0;
     final_results[result_index].rmse_v = sqrt(sum_sq_err_ekf_v / total_samples) * 1000.0;
+    final_results[result_index].avg_exec_time_us = (total_samples > 0) ? ((float)total_exec_time_us / total_samples) : 0;
+    final_results[result_index].memory_used = peak_memory_used;
     result_index++;
   }
   Serial.println("[INFO] Selesai.\n");
@@ -348,34 +362,38 @@ void setup()
   if (!runDatasetTest("h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv", "mixed"))
     return;
 
-  Serial.println("\n===========================================================================");
-  Serial.println("| NAMA DATASET         | RMSE SoC (CC)  | RMSE SoC (EKF) | RMSE TEGANGAN  |");
-  Serial.println("===========================================================================");
+  Serial.println("\n=========================================================================================================");
+  Serial.println("| NAMA DATASET         | RMSE SoC (CC)  | RMSE SoC (EKF) | RMSE TEGANGAN  | BEBAN CPU (us) | MEMORI (B) |");
+  Serial.println("=========================================================================================================");
   for (int i = 0; i < result_index; i++)
   {
-    Serial.printf("| %-20s | %10.4f %%   | %10.4f %%   | %9.4f mV   |\n",
+    Serial.printf("| %-20s | %10.4f %%   | %10.4f %%   | %9.4f mV   | %12.2f   | %10u |\n",
                   final_results[i].filename.c_str(),
                   final_results[i].rmse_cc,
                   final_results[i].rmse_ekf,
-                  final_results[i].rmse_v);
+                  final_results[i].rmse_v,
+                  final_results[i].avg_exec_time_us,
+                  final_results[i].memory_used);
   }
-  Serial.println("===========================================================================");
+  Serial.println("=========================================================================================================");
   // =======================================================
   // CETAK FORMAT MARKDOWN
   // =======================================================
   Serial.println("\n\n<!-- COPY MULAI DARI BAWAH INI -->");
   Serial.println("## Tabel Hasil Perhitungan RMSE (PiL ESP32) dengan Polinomial Orde 6");
   Serial.println("Berikut adalah perbandingan tingkat error (RMSE) antara metode Coulomb Counting (CC) dan Extended Kalman Filter (EKF) menggunakan pemodelan fungsi OCV berbasis polinomial orde 6:");
-  Serial.println("\n| NAMA DATASET | RMSE SoC (CC) | RMSE SoC (EKF) | RMSE Tegangan (EKF) |");
-  Serial.println("| :--- | :---: | :---: | :---: |");
+  Serial.println("\n| NAMA DATASET | RMSE SoC (CC) | RMSE SoC (EKF) | RMSE Tegangan (EKF) | Beban CPU/Iterasi (us) | Penggunaan Memori (Bytes) |");
+  Serial.println("| :--- | :---: | :---: | :---: | :---: | :---: |");
 
   for (int i = 0; i < result_index; i++)
   {
-    Serial.printf("| %s | %.4f%% | %.4f%% | %.4f mV |\n",
+    Serial.printf("| %s | %.4f%% | %.4f%% | %.4f mV | %.2f | %u |\n",
                   final_results[i].filename.c_str(),
                   final_results[i].rmse_cc,
                   final_results[i].rmse_ekf,
-                  final_results[i].rmse_v);
+                  final_results[i].rmse_v,
+                  final_results[i].avg_exec_time_us,
+                  final_results[i].memory_used);
   }
 
   Serial.println("\n### Parameter Model & Tuning EKF yang Digunakan:");
