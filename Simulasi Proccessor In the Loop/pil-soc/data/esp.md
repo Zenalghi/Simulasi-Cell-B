@@ -27,4 +27,3 @@ Berdasarkan hasil eksekusi Processor-in-the-Loop pada ESP32, terlihat *trade-off
 * **R Matriks (Measurement Noise Base):** 0.000500 (adaptive berdasarkan observability dOCV/dSOC)
 * **P_init (Initial Error Covariance):** `P[0][0]` = 0.5, `P[1][1]` = 0.1
 * **Simulasi Memory Loss:** Algoritma dimulai dengan *offset error* sebesar 10% untuk menguji kekokohan EKF.
-

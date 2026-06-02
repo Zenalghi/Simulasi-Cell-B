@@ -68,9 +68,9 @@ const float lut_c1[LUT_ECM_SIZE] = {
 // =========================================================
 // 3. TUNING NOISE PARAMETER EKF
 // =========================================================
-const float Q_NOISE_00 = 1e-6;     // Process noise SOC
+const float Q_NOISE_00 = 5e-6;     // Process noise SOC (diperbesar agar P tidak collapse di plateau)
 const float Q_NOISE_11 = 1e-4;     // Process noise V_RC
-const float R_NOISE_BASE = 0.0005; // Measurement noise base (V^2)
+const float R_NOISE_BASE = 0.0002; // Measurement noise base (V^2)
 
 // =========================================================
 // 4. VARIABEL STATE ESTIMATION & ERROR TRACKING
@@ -219,14 +219,11 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   // Adaptive Measurement Noise R
   float R_eff = R_NOISE_BASE;
   if (fabsf(I_meas) < 0.05f)
-    R_eff *= 0.5f; // Rest: tegangan ≈ OCV, sangat reliable
+    R_eff *= 0.5f;  // Rest: tegangan ≈ OCV, sangat reliable
+  else if (I_meas < 0.0f)
+    R_eff *= 10.0f; // Charging: model ECM kurang akurat saat charge
   else
-    R_eff *= 3.0f; // Under load: ketidakpastian model ECM meningkat
-
-  // Kompensasi observability rendah di plateau LiFePO4
-  // Saat dOCV/dSOC kecil, tegangan tidak informatif terhadap SOC
-  float obs = max(dOCV_dSOC * dOCV_dSOC, 0.0001f);
-  R_eff += 0.001f / obs;
+    R_eff *= 5.0f;  // Discharging: model ECM cukup akurat
 
   // Innovation Covariance S = H*P*H' + R
   float S = (h0 * h0 * P_pred[0][0]) + (h0 * h1 * P_pred[0][1]) +
@@ -576,7 +573,7 @@ void setup()
   Serial.println("  * Sumber: `h-GroundTruth_OCV_SOC_LiFePO4.csv` (Cubic Spline), resolusi 5% SOC");
   Serial.println("* **Deteksi Arus:** Auto-detect dari data ZKEtech (bandingkan `V_rest` vs `V_active`)");
   Serial.printf("* **Q Matriks (Process Noise):** `Q_00` = %.1e, `Q_11` = %.1e\n", Q_NOISE_00, Q_NOISE_11);
-  Serial.printf("* **R Matriks (Measurement Noise Base):** %f (adaptive berdasarkan observability dOCV/dSOC)\n", R_NOISE_BASE);
+  Serial.printf("* **R Matriks (Measurement Noise Base):** %f (adaptive: 0.5x rest, 5x discharge, 10x charge)\n", R_NOISE_BASE);
   Serial.printf("* **P_init (Initial Error Covariance):** `P[0][0]` = %.1f, `P[1][1]` = %.1f\n", 0.5, 0.1);
   Serial.println("* **Simulasi Memory Loss:** Algoritma dimulai dengan *offset error* sebesar 10% untuk menguji kekokohan EKF.");
   Serial.println("\n");
