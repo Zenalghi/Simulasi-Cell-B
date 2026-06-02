@@ -1,5 +1,6 @@
 
 ## Tabel Hasil Perbandingan Metrik (RMSE & MAE)
+### Menggunakan Offset error 10%
 Tabel berikut menyajikan komparasi performa estimasi antara Coulomb Counting (CC) dan Extended Kalman Filter (EKF):
 
 | NAMA DATASET | RMSE SoC CC (%) | RMSE SoC EKF (%) | MAE SoC CC (%) | MAE SoC EKF (%) | RMSE V EKF (mV) | MAE V EKF (mV) |
