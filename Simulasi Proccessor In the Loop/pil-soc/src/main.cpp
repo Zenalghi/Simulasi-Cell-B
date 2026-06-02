@@ -56,8 +56,8 @@ const float lut_c1[LUT_ECM_SIZE] = {
 // =========================================================
 // 3. TUNING NOISE PARAMETER EKF (LOCKED BASELINES)
 // =========================================================
-const float Q_NOISE_00 = 1e-6f;
-const float Q_NOISE_11 = 0.1f;
+const float Q_NOISE_00 = 1e-5f;
+const float Q_NOISE_11 = 5e-3f;
 const float R_BASE = 0.0001f;
 
 // =========================================================
@@ -195,7 +195,7 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   // ---------------------------------------------------------
   // Penggantian nilai Jacobian khusus untuk decoupled filter
   // ---------------------------------------------------------
-  float h0 = max(dOCV_dSOC, 0.01f);
+  float h0 = max(dOCV_dSOC, 0.05f);
   float h1 = -1.0f;
 
   // Fixed R untuk adaptasi Vc1 yang cepat tanpa merusak SoC
@@ -203,7 +203,7 @@ void runEKFStep(float I_meas, float V_meas, float dt)
 
   if (fabsf(I_meas) < 0.05f)
   {
-    R_dynamic = 0.01f;
+    R_dynamic = 0.001f;
   }
 
   // Innovation Covariance S = H*P*H' + R
@@ -219,10 +219,10 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   float K0_eff = K[0];
   float innov = V_meas - V_pred;
 
-  // Jika error tegangan kurang dari 50mV, stop koreksi SOC 
+  // Jika error tegangan kurang dari 8mV, kurangi gain secara bertahap (soft scaling)
   // untuk mencegah hardware mismatch menarik SOC menjauh dari true value.
-  if (fabsf(innov) < 0.05f) {
-      K0_eff = 0.0f;
+  if (fabsf(innov) < 0.008f) {
+      K0_eff *= (fabsf(innov) / 0.008f);
   }
 
   // Koreksi State x = x + K*(z - h(x))
@@ -345,7 +345,7 @@ bool runDatasetTest(String filename, float offset_pct_val)
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
 
-      ekf_P[0][0] = 0.0f;
+      ekf_P[0][0] = (offset_pct_val * offset_pct_val) + 0.01f;
       ekf_P[0][1] = 0.0f;
       ekf_P[1][0] = 0.0f;
       ekf_P[1][1] = 0.1f;
@@ -509,7 +509,7 @@ void setup()
   Serial.println("* **Deteksi Arus:** Offline preprocessing (edge-triggered state machine di preprocess.py)");
   Serial.printf("* **Q Matriks (Process Noise):** `Q_00` = %.1e, `Q_11` = %.1e\n", Q_NOISE_00, Q_NOISE_11);
   Serial.printf("* **R Matriks (Measurement Noise):** Dynamic Observability R = %.4f / (|dOCV/dSOC| + 1e-4)\n", R_BASE);
-  Serial.printf("* **P_init (Initial Error Covariance):** `P[0][0]` = %.1f, `P[1][1]` = %.1f\n", 1.0, 0.1);
+  Serial.printf("* **P_init (Initial Error Covariance):** `P[0][0]` = offset^2 + 0.01, `P[1][1]` = %.1f\n", 0.1);
   Serial.println("* **Simulasi Memory Loss:** Algoritma divariasikan dengan *offset error* sebesar 0%, 5%, dan 10% untuk menguji kekokohan EKF secara komprehensif.");
   Serial.println("\n");
 }
