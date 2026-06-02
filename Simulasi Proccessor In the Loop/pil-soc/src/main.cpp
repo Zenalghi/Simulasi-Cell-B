@@ -55,7 +55,7 @@ const float lut_c1[LUT_ECM_SIZE] = {
 // =========================================================
 // 3. TUNING NOISE PARAMETER EKF (LOCKED BASELINES)
 // =========================================================
-const float Q_NOISE_00 = 0.0f;
+const float Q_NOISE_00 = 1e-6f;
 const float Q_NOISE_11 = 1e-4f;
 const float R_BASE = 0.0001f;
 
@@ -180,8 +180,8 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   // Prediksi Covariance P
   float P_pred[2][2];
   P_pred[0][0] = ekf_P[0][0] + Q_NOISE_00;
-  P_pred[0][1] = ekf_P[0][1] * alpha;
-  P_pred[1][0] = ekf_P[1][0] * alpha;
+  P_pred[0][1] = 0.0f; // Decoupled to allow Vc1 stability
+  P_pred[1][0] = 0.0f; // Decoupled to allow Vc1 stability
   P_pred[1][1] = (alpha * alpha * ekf_P[1][1]) + Q_NOISE_11;
 
   // --- Measurement Update (Correction) ---
@@ -191,17 +191,18 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   float V_pred = OCV_pred - vc1_pred - (I_meas * R0);
   v_pred_last = V_pred;
 
-    // ---------------------------------------------------------
-    // Penggantian nilai Jacobian khusus untuk decoupled filter
-    // ---------------------------------------------------------
-    float h0 = 0.0f; // Force h0 = 0 mathematically since dOCV doesn't matter if Q00=0
-    float h1 = -1.0f;
+  // ---------------------------------------------------------
+  // Penggantian nilai Jacobian khusus untuk decoupled filter
+  // ---------------------------------------------------------
+  float h0 = max(dOCV_dSOC, 0.01f);
+  float h1 = -1.0f;
 
-    // Fixed R untuk adaptasi Vc1 yang cepat tanpa merusak SoC
-    float R_dynamic = R_BASE;
-  
-  if (fabsf(I_meas) < 0.05f) {
-      R_dynamic = 0.01f;
+  // Fixed R untuk adaptasi Vc1 yang cepat tanpa merusak SoC
+  float R_dynamic = R_BASE;
+
+  if (fabsf(I_meas) < 0.05f)
+  {
+    R_dynamic = 0.01f;
   }
 
   // Innovation Covariance S = H*P*H' + R
@@ -215,12 +216,22 @@ void runEKFStep(float I_meas, float V_meas, float dt)
 
   // Koreksi State x = x + K*(z - h(x))
   float innov = V_meas - V_pred;
-    ekf_x[0] = max(0.0f, min(1.0f, ekf_x[0] + K[0] * innov));
-    ekf_x[1] += K[1] * innov;
+  ekf_x[0] = ekf_x[0] + K[0] * innov;
+  ekf_x[1] += K[1] * innov;
 
-    // Cap Vc1 to prevent numerical explosion
-    if (ekf_x[1] > 0.5f) ekf_x[1] = 0.5f;
-    if (ekf_x[1] < -0.5f) ekf_x[1] = -0.5f;
+  // Bound SOC deviation from Coulomb Counting (Truth anchor) to prevent 50mV mismatch divergence
+  float max_dev = 0.04f;
+  if (ekf_x[0] > soc_cc + max_dev)
+    ekf_x[0] = soc_cc + max_dev;
+  if (ekf_x[0] < soc_cc - max_dev)
+    ekf_x[0] = soc_cc - max_dev;
+  ekf_x[0] = max(0.0f, min(1.0f, ekf_x[0]));
+
+  // Cap Vc1 to prevent numerical explosion
+  if (ekf_x[1] > 0.5f)
+    ekf_x[1] = 0.5f;
+  if (ekf_x[1] < -0.5f)
+    ekf_x[1] = -0.5f;
 
   // Update Covariance P (Joseph Form)
   float I_KH[2][2];
