@@ -24,19 +24,10 @@ int result_index = 0;
 // 2. PARAMETER MODEL BATERAI
 // =========================================================
 const float Q_AH = 20.798555;
-const float Q_COULOMB = 74874.8; // Kapasitas As (Ampere-sekon)
+const float Q_COULOMB = 74874.8;
 
-// -----------------------------------------------------------
-// OCV-SOC Lookup Table (Piecewise Linear / Polynomial Orde 1 per segmen)
-// Sumber: h-GroundTruth_OCV_SOC_LiFePO4.csv (kolom Cubic Spline)
-// 21 titik, resolusi 5% SOC
-//
-// Catatan Ilmiah: Baterai LiFePO4 memiliki plateau OCV yang
-// sangat datar pada SOC 15-85% (~3.22-3.29V). Polynomial global
-// (orde berapa pun) cenderung berosilasi dan overshoot di region ini.
-// LUT dengan interpolasi linear (piecewise polynomial orde 1)
-// memberikan akurasi yang jauh superior dan stabil secara numerik.
-// -----------------------------------------------------------
+// OCV-SOC Lookup Table (Piecewise Linear)
+// Sumber: h-GroundTruth_OCV_SOC_LiFePO4.csv (Cubic Spline), 21 titik, resolusi 5%
 const int LUT_OCV_SIZE = 21;
 const float lut_soc_ocv[LUT_OCV_SIZE] = {
     0.00, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
@@ -46,11 +37,7 @@ const float lut_ocv_val[LUT_OCV_SIZE] = {
     3.2758, 3.2835, 3.2871, 3.2880, 3.2878, 3.2884, 3.2917, 3.2958,
     3.2973, 3.3039, 3.3353, 3.4122, 3.5370};
 
-// Referensi Arsip: Koefisien Polynomial Orde 6 (tidak digunakan lagi)
-// p0=2.664967, p1=9.485166, p2=-58.074182, p3=169.872070,
-// p4=-250.913864, p5=179.845768, p6=-49.353787
-
-// Parameter ECM (1-RC Thevenin) - tidak berubah
+// Parameter ECM (1-RC Thevenin)
 const int LUT_ECM_SIZE = 9;
 const float lut_soc_ecm[LUT_ECM_SIZE] = {
     0.0, 0.090902, 0.204618, 0.318054, 0.431697,
@@ -66,18 +53,18 @@ const float lut_c1[LUT_ECM_SIZE] = {
     19607.70, 15177.97, 16580.74, 24189.08};
 
 // =========================================================
-// 3. TUNING NOISE PARAMETER EKF
+// 3. TUNING NOISE PARAMETER EKF (LOCKED BASELINES)
 // =========================================================
-const float Q_NOISE_00 = 5e-6;     // Process noise SOC (diperbesar agar P tidak collapse di plateau)
-const float Q_NOISE_11 = 1e-4;     // Process noise V_RC
-const float R_NOISE_BASE = 0.0002; // Measurement noise base (V^2)
+const float Q_NOISE_00 = 1e-5f;
+const float Q_NOISE_11 = 1e-4f;
+const float R_BASE = 0.0005f;
 
 // =========================================================
 // 4. VARIABEL STATE ESTIMATION & ERROR TRACKING
 // =========================================================
 float soc_cc = 0.0;
 float ekf_x[2] = {0.0, 0.0};
-float ekf_P[2][2] = {{0.5, 0.0}, {0.0, 0.1}};
+float ekf_P[2][2] = {{1.0, 0.0}, {0.0, 0.1}};
 
 float v_pred_last = 0.0;
 float soc_true = 0.0;
@@ -112,15 +99,13 @@ float interpolate1D(float x, const float *x_data, const float *y_data, int size)
   return y_data[0];
 }
 
-// OCV dari Lookup Table (Piecewise Linear Orde 1)
-float get_OCV(float soc)
+float get_OCV_from_LUT(float soc)
 {
   return interpolate1D(constrain(soc, 0.0f, 1.0f),
                        lut_soc_ocv, lut_ocv_val, LUT_OCV_SIZE);
 }
 
-// Turunan dOCV/dSOC via central finite difference pada LUT
-float get_dOCV_dSOC(float soc)
+float get_dOCV_dSOC_LUT(float soc)
 {
   soc = constrain(soc, 0.0f, 1.0f);
   float h = 0.005f;
@@ -128,13 +113,10 @@ float get_dOCV_dSOC(float soc)
   float soc_hi = min(soc + h, 1.0f);
   float dSOC = soc_hi - soc_lo;
   if (dSOC < 1e-6f)
-    return 0.01f;
-  float deriv = (get_OCV(soc_hi) - get_OCV(soc_lo)) / dSOC;
-  // Floor positif untuk stabilitas numerik di region flat/non-monotonic
-  return max(deriv, 0.01f);
+    return 0.0f;
+  return (get_OCV_from_LUT(soc_hi) - get_OCV_from_LUT(soc_lo)) / dSOC;
 }
 
-// Reverse lookup OCV → SOC (untuk inisialisasi soc_true dari tegangan rest)
 float get_SOC_from_OCV(float ocv)
 {
   if (ocv <= lut_ocv_val[0])
@@ -142,8 +124,6 @@ float get_SOC_from_OCV(float ocv)
   if (ocv >= lut_ocv_val[LUT_OCV_SIZE - 1])
     return 1.0f;
 
-  // Cari segmen LUT pertama yang mengandung nilai OCV
-  // (handle kurva non-monotonic LiFePO4 di region SOC 15-25%)
   for (int i = 0; i < LUT_OCV_SIZE - 1; i++)
   {
     float v0 = lut_ocv_val[i];
@@ -157,7 +137,6 @@ float get_SOC_from_OCV(float ocv)
     }
   }
 
-  // Fallback: nearest neighbor
   int best_idx = 0;
   float best_diff = fabsf(ocv - lut_ocv_val[0]);
   for (int i = 1; i < LUT_OCV_SIZE; i++)
@@ -206,8 +185,8 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   P_pred[1][1] = (alpha * alpha * ekf_P[1][1]) + Q_NOISE_11;
 
   // --- Measurement Update (Correction) ---
-  float OCV_pred = get_OCV(soc_pred);
-  float dOCV_dSOC = get_dOCV_dSOC(soc_pred);
+  float OCV_pred = get_OCV_from_LUT(soc_pred);
+  float dOCV_dSOC = get_dOCV_dSOC_LUT(soc_pred);
 
   float V_pred = OCV_pred - vc1_pred - (I_meas * R0);
   v_pred_last = V_pred;
@@ -216,18 +195,12 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   float h0 = dOCV_dSOC;
   float h1 = -1.0f;
 
-  // Adaptive Measurement Noise R
-  float R_eff = R_NOISE_BASE;
-  if (fabsf(I_meas) < 0.05f)
-    R_eff *= 0.5f;  // Rest: tegangan ≈ OCV, sangat reliable
-  else if (I_meas < 0.0f)
-    R_eff *= 10.0f; // Charging: model ECM kurang akurat saat charge
-  else
-    R_eff *= 5.0f;  // Discharging: model ECM cukup akurat
+  // Dynamic Observability R-Matrix
+  float R_dynamic = R_BASE / (fabsf(dOCV_dSOC) + 1e-4f);
 
   // Innovation Covariance S = H*P*H' + R
   float S = (h0 * h0 * P_pred[0][0]) + (h0 * h1 * P_pred[0][1]) +
-            (h1 * h0 * P_pred[1][0]) + (h1 * h1 * P_pred[1][1]) + R_eff;
+            (h1 * h0 * P_pred[1][0]) + (h1 * h1 * P_pred[1][1]) + R_dynamic;
 
   // Kalman Gain K = P*H' / S
   float K[2];
@@ -239,7 +212,7 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   ekf_x[0] = constrain(ekf_x[0] + (K[0] * innov), 0.0, 1.0);
   ekf_x[1] = ekf_x[1] + (K[1] * innov);
 
-  // Update Covariance P (Joseph Form untuk stabilitas numerik)
+  // Update Covariance P (Joseph Form)
   float I_KH[2][2];
   I_KH[0][0] = 1.0f - (K[0] * h0);
   I_KH[0][1] = -(K[0] * h1);
@@ -252,12 +225,12 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   Temp[1][0] = I_KH[1][0] * P_pred[0][0] + I_KH[1][1] * P_pred[1][0];
   Temp[1][1] = I_KH[1][0] * P_pred[0][1] + I_KH[1][1] * P_pred[1][1];
 
-  ekf_P[0][0] = Temp[0][0] * I_KH[0][0] + Temp[0][1] * I_KH[0][1] + (K[0] * K[0] * R_eff);
-  ekf_P[0][1] = Temp[0][0] * I_KH[1][0] + Temp[0][1] * I_KH[1][1] + (K[0] * K[1] * R_eff);
-  ekf_P[1][0] = Temp[1][0] * I_KH[0][0] + Temp[1][1] * I_KH[0][1] + (K[1] * K[0] * R_eff);
-  ekf_P[1][1] = Temp[1][0] * I_KH[1][0] + Temp[1][1] * I_KH[1][1] + (K[1] * K[1] * R_eff);
+  ekf_P[0][0] = Temp[0][0] * I_KH[0][0] + Temp[0][1] * I_KH[0][1] + (K[0] * K[0] * R_dynamic);
+  ekf_P[0][1] = Temp[0][0] * I_KH[1][0] + Temp[0][1] * I_KH[1][1] + (K[0] * K[1] * R_dynamic);
+  ekf_P[1][0] = Temp[1][0] * I_KH[0][0] + Temp[1][1] * I_KH[0][1] + (K[1] * K[0] * R_dynamic);
+  ekf_P[1][1] = Temp[1][0] * I_KH[1][0] + Temp[1][1] * I_KH[1][1] + (K[1] * K[1] * R_dynamic);
 
-  // Symmetry enforcement & positivity floor (stabilitas float32 ESP32)
+  // Float32 symmetry enforcement & positivity floor
   ekf_P[0][1] = (ekf_P[0][1] + ekf_P[1][0]) * 0.5f;
   ekf_P[1][0] = ekf_P[0][1];
   ekf_P[0][0] = max(ekf_P[0][0], 1e-10f);
@@ -266,7 +239,7 @@ void runEKFStep(float I_meas, float V_meas, float dt)
 
 // =========================================================
 // 7. RUNNER PROCESSOR-IN-THE-LOOP (PiL)
-//    Auto-detect sign arus dari data ZKEtech
+//    Input: preprocessed CSV with Dir_Cur(A) column (signed)
 // =========================================================
 bool runDatasetTest(String filename)
 {
@@ -302,24 +275,11 @@ bool runDatasetTest(String filename)
   float time_prev = -1.0;
   char buf[128];
 
-  // -------------------------------------------------------
-  // Variabel Auto-Detect Sign Arus (data ZKEtech)
-  // ZKEtech selalu output arus positif, sign harus dideteksi
-  // dari perbandingan tegangan rest vs tegangan saat arus mengalir:
-  //   V_active < V_rest → Discharge (arus positif, SOC turun)
-  //   V_active > V_rest → Charge   (arus negatif, SOC naik)
-  // -------------------------------------------------------
-  float v_last_rest = -1.0f;
-  bool phase_locked = false;
-  bool is_charge_phase = false;
-  float v_first_active = -1.0f;
-  int active_count = 0;
-
   while (file.available())
   {
     String line = file.readStringUntil('\n');
     line.trim();
-    if (line.length() < 5 || line.indexOf("*") >= 0 || line.indexOf("-") >= 0)
+    if (line.length() < 5)
       continue;
 
     line.toCharArray(buf, sizeof(buf));
@@ -331,7 +291,7 @@ bool runDatasetTest(String filename)
       continue;
 
     float time_s = atof(t_str);
-    float current = atof(c_str);
+    float current = atof(c_str); // Already signed from preprocess.py
     float voltage = atof(v_str);
 
     float dt = (time_prev < 0) ? 0.0 : (time_s - time_prev);
@@ -339,100 +299,50 @@ bool runDatasetTest(String filename)
       continue;
     time_prev = time_s;
 
-    // --- Auto-detect sign arus ---
-    if (current < 0.05f)
-    {
-      // Rest period: catat tegangan, reset deteksi fase
-      v_last_rest = voltage;
-      phase_locked = false;
-      v_first_active = -1.0f;
-      active_count = 0;
-      current = 0.0f;
-    }
-    else
-    {
-      // Active period: tentukan fase dari perbandingan tegangan
-      if (!phase_locked)
-      {
-        if (v_last_rest > 0.0f)
-        {
-          // Ada referensi rest → bandingkan IR drop/rise
-          // Discharge: V_terminal turun di bawah V_rest (karena IR drop)
-          // Charge: V_terminal naik di atas V_rest (karena IR rise)
-          is_charge_phase = (voltage > v_last_rest + 0.003f);
-          phase_locked = true;
-        }
-        else
-        {
-          // Tidak ada rest di awal → gunakan trend voltage
-          if (v_first_active < 0.0f)
-            v_first_active = voltage;
-          active_count++;
-          if (active_count >= 3)
-          {
-            is_charge_phase = (voltage > v_first_active + 0.003f);
-            phase_locked = true;
-          }
-          else
-          {
-            is_charge_phase = false; // Default: discharge
-          }
-        }
-      }
-      // Apply sign arus berdasarkan fase terdeteksi
-      current = is_charge_phase ? -fabsf(current) : fabsf(current);
-    }
-
     // --- Inisialisasi sample pertama ---
     if (total_samples == 0)
     {
-      // Tentukan SOC awal berdasarkan kondisi awal dataset
-      if (filename == "h-charge_rest_60m.csv")
-        soc_true = 0.0f; // Baterai kosong (0%), akan di-charge
-      else if (filename == "h-DCC-4.4A-2.5V.csv")
-        soc_true = 1.0f; // Baterai penuh (100%), akan di-discharge
-      else if (filename == "h-Dynamic_Profiling_(Urban Load).csv")
-        soc_true = 1.0f; // Baterai penuh (100%), profil discharge
-      else if (filename == "h-charging_7.33A-rest 2h.csv")
-        soc_true = 0.06f; // ~6% dari OCV rest awal (3.063V)
-      else if (filename == "h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv")
-        soc_true = 0.01f; // ~1% dari OCV rest awal (2.718V)
+      if (filename == "clean_h-charge_rest_60m.csv")
+        soc_true = 0.0f;
+      else if (filename == "clean_h-DCC-4.4A-2.5V.csv")
+        soc_true = 1.0f;
+      else if (filename == "clean_h-Dynamic_Profiling_(Urban Load).csv")
+        soc_true = 1.0f;
+      else if (filename == "clean_h-charging_7.33A-rest 2h.csv")
+        soc_true = 0.06f;
+      else if (filename == "clean_h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv")
+        soc_true = 0.01f;
       else
-        soc_true = (v_last_rest > 0) ? get_SOC_from_OCV(v_last_rest) : 0.5f;
+        soc_true = 0.5f;
 
-      // Offset error 10% untuk simulasi memory loss
       float soc_algo_start = (soc_true < 0.10f) ? (soc_true + 0.10f) : (soc_true - 0.10f);
 
       soc_cc = soc_algo_start;
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
 
-      // Initial P covariance (lebih besar untuk konvergensi cepat dari offset 10%)
-      ekf_P[0][0] = 0.5;
-      ekf_P[0][1] = 0.0;
-      ekf_P[1][0] = 0.0;
-      ekf_P[1][1] = 0.1;
+      ekf_P[0][0] = 1.0f;
+      ekf_P[0][1] = 0.0f;
+      ekf_P[1][0] = 0.0f;
+      ekf_P[1][1] = 0.1f;
 
       total_samples++;
       continue;
     }
 
-    // Update SOC true (Coulomb counting "sempurna" sebagai referensi)
+    // Update SOC true (perfect Coulomb counting reference)
     soc_true = constrain(soc_true - (current * dt / Q_COULOMB), 0.0, 1.0);
 
-    // Profiling Waktu Eksekusi CC
     uint32_t t_start_cc = micros();
     runCCStep(current, dt);
     uint32_t t_end_cc = micros();
     total_exec_time_cc_us += (t_end_cc - t_start_cc);
 
-    // Profiling Waktu Eksekusi EKF
     uint32_t t_start_ekf = micros();
     runEKFStep(current, voltage, dt);
     uint32_t t_end_ekf = micros();
     total_exec_time_ekf_us += (t_end_ekf - t_start_ekf);
 
-    // Akumulasi Error RMSE & MAE
     double err_cc = soc_true - soc_cc;
     double err_ekf = soc_true - ekf_x[0];
     double err_v = voltage - v_pred_last;
@@ -489,16 +399,15 @@ void setup()
 
   result_index = 0;
 
-  // Semua dataset menggunakan auto-detect sign arus
-  if (!runDatasetTest("h-charge_rest_60m.csv"))
+  if (!runDatasetTest("clean_h-charge_rest_60m.csv"))
     return;
-  if (!runDatasetTest("h-DCC-4.4A-2.5V.csv"))
+  if (!runDatasetTest("clean_h-DCC-4.4A-2.5V.csv"))
     return;
-  if (!runDatasetTest("h-Dynamic_Profiling_(Urban Load).csv"))
+  if (!runDatasetTest("clean_h-Dynamic_Profiling_(Urban Load).csv"))
     return;
-  if (!runDatasetTest("h-charging_7.33A-rest 2h.csv"))
+  if (!runDatasetTest("clean_h-charging_7.33A-rest 2h.csv"))
     return;
-  if (!runDatasetTest("h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv"))
+  if (!runDatasetTest("clean_h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv"))
     return;
 
   // =======================================================
@@ -544,11 +453,11 @@ void setup()
   }
 
   // =======================================================
-  // ANALISIS TRADE-OFF (DENGAN HARDCODE MEMORI & BIG-O)
+  // ANALISIS TRADE-OFF
   // =======================================================
   Serial.println("\n### Analisis Komparasi Trade-Off (Menjawab Formulasi Masalah)");
   Serial.println("Berdasarkan hasil eksekusi Processor-in-the-Loop pada ESP32, terlihat *trade-off* yang jelas antara akurasi dan beban sumber daya sistem:");
-  Serial.println("\n| Algoritma | Waktu Eksekusi CPU (\xC2\xB5s) | Penggunaan Memori Stack (Bytes) | Kompleksitas Waktu (Big-O) |");
+  Serial.println("\n| Algoritma | Waktu Eksekusi CPU (\\xC2\\xB5s) | Penggunaan Memori Stack (Bytes) | Kompleksitas Waktu (Big-O) |");
   Serial.println("| :--- | :---: | :---: | :---: |");
 
   float avg_cc_time = 0, avg_ekf_time = 0;
@@ -569,12 +478,12 @@ void setup()
   // PARAMETER MODEL YANG DIGUNAKAN
   // =======================================================
   Serial.println("\n### Parameter Model & Tuning EKF yang Digunakan:");
-  Serial.println("* **OCV-SOC Model:** Piecewise Linear (LUT 21 titik, Polynomial Orde 1 per segmen)");
+  Serial.println("* **OCV-SOC Model:** Piecewise Linear (LUT 21 titik)");
   Serial.println("  * Sumber: `h-GroundTruth_OCV_SOC_LiFePO4.csv` (Cubic Spline), resolusi 5% SOC");
-  Serial.println("* **Deteksi Arus:** Auto-detect dari data ZKEtech (bandingkan `V_rest` vs `V_active`)");
+  Serial.println("* **Deteksi Arus:** Offline preprocessing (edge-triggered state machine di preprocess.py)");
   Serial.printf("* **Q Matriks (Process Noise):** `Q_00` = %.1e, `Q_11` = %.1e\n", Q_NOISE_00, Q_NOISE_11);
-  Serial.printf("* **R Matriks (Measurement Noise Base):** %f (adaptive: 0.5x rest, 5x discharge, 10x charge)\n", R_NOISE_BASE);
-  Serial.printf("* **P_init (Initial Error Covariance):** `P[0][0]` = %.1f, `P[1][1]` = %.1f\n", 0.5, 0.1);
+  Serial.printf("* **R Matriks (Measurement Noise):** Dynamic Observability R = %.4f / (|dOCV/dSOC| + 1e-4)\n", R_BASE);
+  Serial.printf("* **P_init (Initial Error Covariance):** `P[0][0]` = %.1f, `P[1][1]` = %.1f\n", 1.0, 0.1);
   Serial.println("* **Simulasi Memory Loss:** Algoritma dimulai dengan *offset error* sebesar 10% untuk menguji kekokohan EKF.");
   Serial.println("\n");
 }
