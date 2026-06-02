@@ -198,8 +198,8 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   float h0 = max(dOCV_dSOC, 0.05f);
   float h1 = -1.0f;
 
-  // Fixed R untuk adaptasi Vc1 yang cepat tanpa merusak SoC
-  float R_dynamic = R_BASE;
+  // Dynamic R berdasarkan slope OCV untuk konvergensi di flat region
+  float R_dynamic = R_BASE / (fabsf(dOCV_dSOC) + 1e-4f);
 
   if (fabsf(I_meas) < 0.05f)
   {
@@ -345,7 +345,7 @@ bool runDatasetTest(String filename, float offset_pct_val)
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
 
-      ekf_P[0][0] = (offset_pct_val * offset_pct_val) + 0.01f;
+      ekf_P[0][0] = (offset_pct_val * offset_pct_val) + 0.05f; // P_init lebih agresif untuk offset
       ekf_P[0][1] = 0.0f;
       ekf_P[1][0] = 0.0f;
       ekf_P[1][1] = 0.1f;
