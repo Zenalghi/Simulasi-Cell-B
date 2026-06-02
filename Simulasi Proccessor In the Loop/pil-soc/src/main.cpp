@@ -336,9 +336,9 @@ bool runDatasetTest(String filename)
       else
         soc_true = 0.5f;
 
-      // Offset 10% dihapus agar EKF dapat mengukur akurasi absolut (< 5%) tanpa bias inisialisasi buatan
-      float soc_algo_start = soc_true;
-
+      // Offset error 10% 
+      float soc_algo_start = (soc_true < 0.10f) ? (soc_true + 0.10f) : (soc_true - 0.10f);
+      
       soc_cc = soc_algo_start;
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
