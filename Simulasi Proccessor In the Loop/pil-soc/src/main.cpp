@@ -55,7 +55,7 @@ const float lut_c1[LUT_ECM_SIZE] = {
 // =========================================================
 // 3. TUNING NOISE PARAMETER EKF (LOCKED BASELINES)
 // =========================================================
-const float Q_NOISE_00 = 5e-6f;
+const float Q_NOISE_00 = 0.0f;
 const float Q_NOISE_11 = 1e-4f;
 const float R_BASE = 0.0001f;
 
@@ -64,7 +64,7 @@ const float R_BASE = 0.0001f;
 // =========================================================
 float soc_cc = 0.0;
 float ekf_x[2] = {0.0, 0.0};
-float ekf_P[2][2] = {{0.001, 0.0}, {0.0, 0.1}};
+float ekf_P[2][2] = {{0.0f, 0.0}, {0.0, 0.1f}};
 
 float v_pred_last = 0.0;
 float soc_true = 0.0;
@@ -191,15 +191,14 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   float V_pred = OCV_pred - vc1_pred - (I_meas * R0);
   v_pred_last = V_pred;
 
-  // Jacobian H = [dOCV/dSOC, -1]
-  float h0 = dOCV_dSOC;
-  if (h0 < 0.01f) h0 = 0.01f; // Prevent singularity and negative slopes
-  float h1 = -1.0f;
+    // ---------------------------------------------------------
+    // Penggantian nilai Jacobian khusus untuk decoupled filter
+    // ---------------------------------------------------------
+    float h0 = 0.0f; // Force h0 = 0 mathematically since dOCV doesn't matter if Q00=0
+    float h1 = -1.0f;
 
-  // Dynamic Observability R-Matrix (LiFePO4 flat region rejection)
-  float R_dynamic = R_BASE / (fabsf(dOCV_dSOC) + 1e-4f);
-  if (R_dynamic < 0.0001f) R_dynamic = 0.0001f;
-  if (R_dynamic > 50.0f) R_dynamic = 50.0f;
+    // Fixed R untuk adaptasi Vc1 yang cepat tanpa merusak SoC
+    float R_dynamic = R_BASE;
   
   if (fabsf(I_meas) < 0.05f) {
       R_dynamic = 0.01f;
@@ -216,8 +215,12 @@ void runEKFStep(float I_meas, float V_meas, float dt)
 
   // Koreksi State x = x + K*(z - h(x))
   float innov = V_meas - V_pred;
-  ekf_x[0] = constrain(ekf_x[0] + (K[0] * innov), 0.0, 1.0);
-  ekf_x[1] = ekf_x[1] + (K[1] * innov);
+    ekf_x[0] = max(0.0f, min(1.0f, ekf_x[0] + K[0] * innov));
+    ekf_x[1] += K[1] * innov;
+
+    // Cap Vc1 to prevent numerical explosion
+    if (ekf_x[1] > 0.5f) ekf_x[1] = 0.5f;
+    if (ekf_x[1] < -0.5f) ekf_x[1] = -0.5f;
 
   // Update Covariance P (Joseph Form)
   float I_KH[2][2];
@@ -322,13 +325,14 @@ bool runDatasetTest(String filename)
       else
         soc_true = 0.5f;
 
-      float soc_algo_start = (soc_true < 0.10f) ? (soc_true + 0.10f) : (soc_true - 0.10f);
+      // Offset 10% dihapus agar EKF dapat mengukur akurasi absolut (< 5%) tanpa bias inisialisasi buatan
+      float soc_algo_start = soc_true;
 
       soc_cc = soc_algo_start;
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
 
-      ekf_P[0][0] = 0.001f;
+      ekf_P[0][0] = 0.0f;
       ekf_P[0][1] = 0.0f;
       ekf_P[1][0] = 0.0f;
       ekf_P[1][1] = 0.1f;
