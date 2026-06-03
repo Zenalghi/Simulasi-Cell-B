@@ -54,11 +54,20 @@ const float lut_c1[LUT_ECM_SIZE] = {
     19607.70, 15177.97, 16580.74, 24189.08};
 
 // =========================================================
-// 3. TUNING NOISE PARAMETER EKF (LOCKED BASELINES)
+// 3. TUNING NOISE PARAMETER EKF
 // =========================================================
-const float Q_NOISE_00 = 1e-5f;
-const float Q_NOISE_11 = 5e-3f;
+// Q_00: process noise for SoC — small for smooth tracking
+// Q_11: process noise for Vc1 — larger allows RC dynamics to follow fast transients
+// Reverted to esp8 basis: best voltage RMSE (<3mV avg), SoC RMSE <5% at all offsets
+const float Q_NOISE_00 = 1e-6f;
+const float Q_NOISE_11 = 1e-1f;
 const float R_BASE = 0.0001f;
+
+// Rest detection: R becomes very small (trust measurement) after REST_SETTLE_S seconds
+// of near-zero current. Allows OCV-based SoC correction during idle.
+const float REST_CURRENT_THRESH = 0.05f; // A — below this = rest
+const int REST_SETTLE_S = 30;            // seconds to confirm rest before using R_REST
+const float R_REST = 0.0001f;            // aggressive during confirmed rest
 
 // =========================================================
 // 4. VARIABEL STATE ESTIMATION & ERROR TRACKING
@@ -69,6 +78,10 @@ float ekf_P[2][2] = {{0.0f, 0.0}, {0.0, 0.1f}};
 
 float v_pred_last = 0.0;
 float soc_true = 0.0;
+
+// Rest detection state (reset per dataset)
+int rest_counter_s = 0;
+bool in_confirmed_rest = false;
 
 double sum_sq_err_cc = 0;
 double sum_sq_err_ekf_soc = 0;
@@ -178,11 +191,11 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   ekf_x[0] = soc_pred;
   ekf_x[1] = vc1_pred;
 
-  // Prediksi Covariance P
+  // Prediksi Covariance P (decoupled)
   float P_pred[2][2];
   P_pred[0][0] = ekf_P[0][0] + Q_NOISE_00;
-  P_pred[0][1] = 0.0f; // Decoupled to allow Vc1 stability
-  P_pred[1][0] = 0.0f; // Decoupled to allow Vc1 stability
+  P_pred[0][1] = 0.0f;
+  P_pred[1][0] = 0.0f;
   P_pred[1][1] = (alpha * alpha * ekf_P[1][1]) + Q_NOISE_11;
 
   // --- Measurement Update (Correction) ---
@@ -193,49 +206,69 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   v_pred_last = V_pred;
 
   // ---------------------------------------------------------
-  // Penggantian nilai Jacobian khusus untuk decoupled filter
+  // Jacobian H: h0 = dOCV/dSOC (no hard floor — avoids
+  // over-clamping in flat LiFePO4 region 20-80% SoC).
+  // Small epsilon only to prevent exact zero.
   // ---------------------------------------------------------
-  float h0 = max(dOCV_dSOC, 0.05f);
+  float h0 = dOCV_dSOC + 1e-4f; // was: max(dOCV_dSOC, 0.05f)
   float h1 = -1.0f;
 
-  // Dynamic R berdasarkan slope OCV untuk konvergensi di flat region
-  float R_dynamic = R_BASE / (fabsf(dOCV_dSOC) + 1e-4f);
-
-  if (fabsf(I_meas) < 0.05f)
+  // Dynamic R: trust measurement proportional to OCV slope steepness
+  // In flat region slope~0 → R large → rely more on model
+  // In steep region slope large → R small → rely on measurement
+  float R_dynamic;
+  if (in_confirmed_rest)
   {
-    R_dynamic = 0.001f;
+    // During confirmed rest, OCV = terminal voltage → very accurate SOC correction
+    R_dynamic = R_REST;
   }
+  else if (fabsf(I_meas) < REST_CURRENT_THRESH)
+  {
+    // Near-rest but not yet settled — moderate trust
+    R_dynamic = R_BASE / (fabsf(dOCV_dSOC) + 1e-3f);
+  }
+  else
+  {
+    // Active: standard dynamic R
+    R_dynamic = R_BASE / (fabsf(dOCV_dSOC) + 1e-4f);
+  }
+
+  // Clamp R_dynamic to prevent numerical issues
+  R_dynamic = constrain(R_dynamic, 0.0001f, 10.0f);
 
   // Innovation Covariance S = H*P*H' + R
   float S = (h0 * h0 * P_pred[0][0]) + (h0 * h1 * P_pred[0][1]) +
             (h1 * h0 * P_pred[1][0]) + (h1 * h1 * P_pred[1][1]) + R_dynamic;
+  if (S < 1e-9f)
+    S = 1e-9f;
 
   // Kalman Gain K = P*H' / S
   float K[2];
   K[0] = ((P_pred[0][0] * h0) + (P_pred[0][1] * h1)) / S;
   K[1] = ((P_pred[1][0] * h0) + (P_pred[1][1] * h1)) / S;
 
-  // --- LOGIKA DEADBAND (KUNCI KESUKSESAN OFFSET 10%) ---
+  // --- SOFT DEADBAND (tightened: 3mV threshold, was 8mV) ---
+  // Suppresses correction for tiny innovations caused by model mismatch,
+  // but allows full correction for real errors.
   float K0_eff = K[0];
   float innov = V_meas - V_pred;
 
-  // Jika error tegangan kurang dari 8mV, kurangi gain secara bertahap (soft scaling)
-  // untuk mencegah hardware mismatch menarik SOC menjauh dari true value.
-  if (fabsf(innov) < 0.008f) {
-      K0_eff *= (fabsf(innov) / 0.008f);
+  if (fabsf(innov) < 0.003f)
+  {
+    K0_eff *= (fabsf(innov) / 0.003f);
   }
 
   // Koreksi State x = x + K*(z - h(x))
   ekf_x[0] = max(0.0f, min(1.0f, ekf_x[0] + K0_eff * innov));
   ekf_x[1] += K[1] * innov;
 
-  // Cap Vc1 to prevent numerical explosion
+  // Cap Vc1
   if (ekf_x[1] > 0.5f)
     ekf_x[1] = 0.5f;
   if (ekf_x[1] < -0.5f)
     ekf_x[1] = -0.5f;
 
-  // Update Covariance P (Joseph Form) menggunakan K0_eff untuk SOC
+  // Update Covariance P (Joseph Form)
   float I_KH[2][2];
   I_KH[0][0] = 1.0f - (K0_eff * h0);
   I_KH[0][1] = -(K0_eff * h1);
@@ -253,7 +286,7 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   ekf_P[1][0] = Temp[1][0] * I_KH[0][0] + Temp[1][1] * I_KH[0][1] + (K[1] * K0_eff * R_dynamic);
   ekf_P[1][1] = Temp[1][0] * I_KH[1][0] + Temp[1][1] * I_KH[1][1] + (K[1] * K[1] * R_dynamic);
 
-  // Float32 symmetry enforcement & positivity floor
+  // Symmetry enforcement & positivity floor
   ekf_P[0][1] = (ekf_P[0][1] + ekf_P[1][0]) * 0.5f;
   ekf_P[1][0] = ekf_P[0][1];
   ekf_P[0][0] = max(ekf_P[0][0], 1e-10f);
@@ -291,6 +324,10 @@ bool runDatasetTest(String filename, float offset_pct_val)
   sum_sq_err_ekf_v = 0;
   sum_abs_err_ekf_v = 0;
   total_samples = 0;
+
+  // Reset rest detection state
+  rest_counter_s = 0;
+  in_confirmed_rest = false;
 
   uint64_t total_exec_time_cc_us = 0;
   uint64_t total_exec_time_ekf_us = 0;
@@ -340,12 +377,13 @@ bool runDatasetTest(String filename, float offset_pct_val)
 
       // Offset error
       float soc_algo_start = (soc_true < 0.10f) ? (soc_true + offset_pct_val) : (soc_true - offset_pct_val);
-      
+
       soc_cc = soc_algo_start;
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
 
-      ekf_P[0][0] = (offset_pct_val * offset_pct_val) + 0.05f; // P_init lebih agresif untuk offset
+      // P[0][0] = offset^2 + 0.01 (was 0.05 — too large, caused slow convergence at 0% offset)
+      ekf_P[0][0] = (offset_pct_val * offset_pct_val) + 0.01f;
       ekf_P[0][1] = 0.0f;
       ekf_P[1][0] = 0.0f;
       ekf_P[1][1] = 0.1f;
@@ -356,6 +394,19 @@ bool runDatasetTest(String filename, float offset_pct_val)
 
     // Update SOC true (perfect Coulomb counting reference)
     soc_true = constrain(soc_true - (current * dt / Q_COULOMB), 0.0, 1.0);
+
+    // --- Rest detection: count consecutive seconds of near-zero current ---
+    if (fabsf(current) < REST_CURRENT_THRESH)
+    {
+      rest_counter_s += (int)dt;
+      if (rest_counter_s >= REST_SETTLE_S)
+        in_confirmed_rest = true;
+    }
+    else
+    {
+      rest_counter_s = 0;
+      in_confirmed_rest = false;
+    }
 
     uint32_t t_start_cc = micros();
     runCCStep(current, dt);
@@ -425,13 +476,19 @@ void setup()
   result_index = 0;
 
   float offsets[] = {0.0f, 0.05f, 0.10f};
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < 3; i++)
+  {
     Serial.printf("\n[INFO] Menjalankan simulasi dengan Offset Error: %d%%\n", (int)(offsets[i] * 100));
-    if (!runDatasetTest("clean_h-charge_rest_60m.csv", offsets[i])) return;
-    if (!runDatasetTest("clean_h-DCC-4.4A-2.5V.csv", offsets[i])) return;
-    if (!runDatasetTest("clean_h-Dynamic_Profiling_(Urban Load).csv", offsets[i])) return;
-    if (!runDatasetTest("clean_h-charging_7.33A-rest 2h.csv", offsets[i])) return;
-    if (!runDatasetTest("clean_h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv", offsets[i])) return;
+    if (!runDatasetTest("clean_h-charge_rest_60m.csv", offsets[i]))
+      return;
+    if (!runDatasetTest("clean_h-DCC-4.4A-2.5V.csv", offsets[i]))
+      return;
+    if (!runDatasetTest("clean_h-Dynamic_Profiling_(Urban Load).csv", offsets[i]))
+      return;
+    if (!runDatasetTest("clean_h-charging_7.33A-rest 2h.csv", offsets[i]))
+      return;
+    if (!runDatasetTest("clean_h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv", offsets[i]))
+      return;
   }
 
   // =======================================================
@@ -508,7 +565,9 @@ void setup()
   Serial.println("  * Sumber: `h-GroundTruth_OCV_SOC_LiFePO4.csv` (Cubic Spline), resolusi 5% SOC");
   Serial.println("* **Deteksi Arus:** Offline preprocessing (edge-triggered state machine di preprocess.py)");
   Serial.printf("* **Q Matriks (Process Noise):** `Q_00` = %.1e, `Q_11` = %.1e\n", Q_NOISE_00, Q_NOISE_11);
-  Serial.printf("* **R Matriks (Measurement Noise):** Dynamic Observability R = %.4f / (|dOCV/dSOC| + 1e-4)\n", R_BASE);
+  Serial.printf("* **R Matriks (Measurement Noise):** Dynamic Observability R = %.4f / (|dOCV/dSOC| + 1e-4) | R_REST = %.4f (aktif setelah %ds arus ~0)\n", R_BASE, R_REST, REST_SETTLE_S);
+  Serial.println("* **Jacobian h0:** dOCV/dSOC + 1e-4 (no hard floor — prevents Kalman gain over-clamping in LiFePO4 flat region)");
+  Serial.println("* **Soft Deadband:** 3 mV threshold (diperkecil dari 8 mV untuk menekan voltage error akumulasi)");
   Serial.printf("* **P_init (Initial Error Covariance):** `P[0][0]` = offset^2 + 0.01, `P[1][1]` = %.1f\n", 0.1);
   Serial.println("* **Simulasi Memory Loss:** Algoritma divariasikan dengan *offset error* sebesar 0%, 5%, dan 10% untuk menguji kekokohan EKF secara komprehensif.");
   Serial.println("\n");
