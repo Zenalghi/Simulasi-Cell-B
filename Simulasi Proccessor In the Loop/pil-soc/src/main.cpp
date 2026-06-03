@@ -16,6 +16,10 @@ struct TestResult
   float mae_v;
   float avg_exec_time_cc_us;
   float avg_exec_time_ekf_us;
+  // Per-dataset EKF diagnostics
+  float diag_avg_K0;
+  float diag_avg_R;
+  float diag_avg_h0;
 };
 TestResult final_results[5];
 int result_index = 0;
@@ -53,21 +57,44 @@ const float lut_c1[LUT_ECM_SIZE] = {
     19607.70, 15177.97, 16580.74, 24189.08};
 
 // =========================================================
-// 3. TUNING NOISE PARAMETER EKF (LOCKED BASELINES)
+// 3. TUNING NOISE PARAMETER EKF
 // =========================================================
+// Process Noise Covariance (Q diagonal) — LOCKED
+// Q[0][0]: SOC drift from CC integration error, capacity fade, current sensor bias
+//   ~0.1% SOC drift/sample → σ=0.001 → σ²=1e-6, padded 5x for unmodeled aging
 const float Q_NOISE_00 = 5e-6f;
+// Q[1][1]: RC-voltage model mismatch — ~10 mV/step ECM error
 const float Q_NOISE_11 = 1e-4f;
-const float R_BASE = 0.0001f;
+
+// Measurement Noise Covariance — Normalized Trust Factor
+// R scales between R_FLAT (low observability) and R_STEEP (high observability)
+// based on the normalized OCV-SOC derivative magnitude.
+// Values are first-pass heuristics. Relative ordering is physics-driven:
+//   R_REST < R_STEEP < R_FLAT (non-negotiable)
+// Absolute magnitudes are the primary tuning lever after structural validation.
+const float MAX_DOCV_DSOC = 7.5f;    // Max observed |dOCV/dSOC| from LUT endpoints
+const float R_STEEP       = 0.0005f; // R at max slope: high observability → trust voltage
+const float R_FLAT        = 0.025f;  // R at zero slope: low observability → trust CC
+const float R_REST        = 0.0002f; // R during settled rest: V≈OCV → high trust
+const float REST_SETTLE_S = 30.0f;   // Seconds of rest before applying R_REST
 
 // =========================================================
 // 4. VARIABEL STATE ESTIMATION & ERROR TRACKING
 // =========================================================
 float soc_cc = 0.0;
 float ekf_x[2] = {0.0, 0.0};
-float ekf_P[2][2] = {{0.001, 0.0}, {0.0, 0.1}};
+float ekf_P[2][2] = {{0.02, 0.0}, {0.0, 0.1}};
 
 float v_pred_last = 0.0;
 float soc_true = 0.0;
+
+// Rest settling timer (accumulated rest duration for R_REST logic)
+float rest_time_s = 0.0f;
+
+// Per-dataset diagnostic accumulators
+double sum_K0_abs = 0;
+double sum_R_dyn = 0;
+double sum_h0_abs = 0;
 
 double sum_sq_err_cc = 0;
 double sum_sq_err_ekf_soc = 0;
@@ -192,17 +219,32 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   v_pred_last = V_pred;
 
   // Jacobian H = [dOCV/dSOC, -1]
+  // Use true physics — the R-matrix trust factor handles low-observability.
+  // Negative slopes (SOC 15-25% dip, dOCV/dSOC ≈ -0.26) are locally correct
+  // for EKF linearization — the correction direction is physically valid.
+  // Only prevent exact zero to avoid degenerate S matrix.
   float h0 = dOCV_dSOC;
-  if (h0 < 0.01f) h0 = 0.01f; // Prevent singularity and negative slopes
+  if (fabsf(h0) < 1e-6f) h0 = 1e-6f;
   float h1 = -1.0f;
 
-  // Dynamic Observability R-Matrix (LiFePO4 flat region rejection)
-  float R_dynamic = R_BASE / (fabsf(dOCV_dSOC) + 1e-4f);
-  if (R_dynamic < 0.0001f) R_dynamic = 0.0001f;
-  if (R_dynamic > 50.0f) R_dynamic = 50.0f;
-  
+  // Normalized Trust Factor for R-Matrix
+  //   t=0 → flat plateau (slope ≈ 0) → R = R_FLAT  (distrust voltage, rely on CC)
+  //   t=1 → steep endpoint            → R = R_STEEP (trust voltage)
+  // Algebraically safe: no division, bounded output, monotonic.
+  float abs_slope = fabsf(dOCV_dSOC);
+  float t_trust = fminf(abs_slope / MAX_DOCV_DSOC, 1.0f);
+  float R_dynamic = R_FLAT + t_trust * (R_STEEP - R_FLAT);
+
+  // Rest-period handling with settling delay
+  // After RC transients decay (REST_SETTLE_S), V_terminal ≈ OCV → maximum trust.
+  // Before settling: keep slope-based R to avoid over-trusting transient voltage.
   if (fabsf(I_meas) < 0.05f) {
-      R_dynamic = 0.01f;
+    rest_time_s += dt;
+    if (rest_time_s >= REST_SETTLE_S) {
+      R_dynamic = R_REST;
+    }
+  } else {
+    rest_time_s = 0.0f;
   }
 
   // Innovation Covariance S = H*P*H' + R
@@ -242,6 +284,24 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   ekf_P[1][0] = ekf_P[0][1];
   ekf_P[0][0] = max(ekf_P[0][0], 1e-10f);
   ekf_P[1][1] = max(ekf_P[1][1], 1e-10f);
+
+  // Trace divergence guard: if P[0][0] exceeds (50% SOC error)² = 0.25,
+  // reset BOTH P and SOC to OCV-derived estimate.
+  // Resetting P without SOC would lock a bad estimate with false confidence.
+  if (ekf_P[0][0] > 0.25f) {
+    ekf_x[0] = constrain(get_SOC_from_OCV(V_meas), 0.0f, 1.0f);
+    ekf_x[1] = 0.0f;
+    ekf_P[0][0] = 0.02f;
+    ekf_P[0][1] = 0.0f;
+    ekf_P[1][0] = 0.0f;
+    ekf_P[1][1] = 0.1f;
+    Serial.println("[WARN] P-matrix divergence guard triggered — reset to OCV-derived SOC");
+  }
+
+  // Accumulate per-dataset diagnostics
+  sum_K0_abs += fabsf(K[0]);
+  sum_R_dyn += R_dynamic;
+  sum_h0_abs += fabsf(h0);
 }
 
 // =========================================================
@@ -275,6 +335,14 @@ bool runDatasetTest(String filename)
   sum_sq_err_ekf_v = 0;
   sum_abs_err_ekf_v = 0;
   total_samples = 0;
+
+  // Reset EKF diagnostic accumulators
+  sum_K0_abs = 0;
+  sum_R_dyn = 0;
+  sum_h0_abs = 0;
+
+  // Reset rest settling timer
+  rest_time_s = 0.0f;
 
   uint64_t total_exec_time_cc_us = 0;
   uint64_t total_exec_time_ekf_us = 0;
@@ -328,7 +396,10 @@ bool runDatasetTest(String filename)
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
 
-      ekf_P[0][0] = 0.001f;
+      // P_init: honest uncertainty for 10% offset test
+      // 10% offset → σ = 0.10 → σ² = 0.01. Using 0.02 (σ ≈ 14%) gives
+      // the filter room to aggressively correct the wrong initial state.
+      ekf_P[0][0] = 0.02f;
       ekf_P[0][1] = 0.0f;
       ekf_P[1][0] = 0.0f;
       ekf_P[1][1] = 0.1f;
@@ -366,6 +437,9 @@ bool runDatasetTest(String filename)
   }
   file.close();
 
+  // Compute number of EKF samples (total_samples - 1 because first was init)
+  long ekf_samples = total_samples - 1;
+
   if (result_index < 5)
   {
     final_results[result_index].filename = filename.substring(0, 20);
@@ -379,6 +453,12 @@ bool runDatasetTest(String filename)
 
     final_results[result_index].avg_exec_time_cc_us = (total_samples > 0) ? ((float)total_exec_time_cc_us / total_samples) : 0;
     final_results[result_index].avg_exec_time_ekf_us = (total_samples > 0) ? ((float)total_exec_time_ekf_us / total_samples) : 0;
+
+    // Store diagnostics
+    final_results[result_index].diag_avg_K0 = (ekf_samples > 0) ? (float)(sum_K0_abs / ekf_samples) : 0;
+    final_results[result_index].diag_avg_R = (ekf_samples > 0) ? (float)(sum_R_dyn / ekf_samples) : 0;
+    final_results[result_index].diag_avg_h0 = (ekf_samples > 0) ? (float)(sum_h0_abs / ekf_samples) : 0;
+
     result_index++;
   }
   Serial.println("[INFO] Selesai.\n");
@@ -460,6 +540,30 @@ void setup()
   }
 
   // =======================================================
+  // EKF DIAGNOSTICS TABLE
+  // =======================================================
+  Serial.println("\n### Diagnostik Internal EKF (Per-Dataset)");
+  Serial.println("| NAMA DATASET | Avg |K[0]| | Avg R_dyn | Avg |h0| | Interpretasi |");
+  Serial.println("| :--- | :---: | :---: | :---: | :--- |");
+  for (int i = 0; i < result_index; i++)
+  {
+    const char *interp;
+    if (final_results[i].diag_avg_K0 < 0.005f)
+      interp = "Filter terlalu konservatif (K~0)";
+    else if (final_results[i].diag_avg_K0 > 0.3f)
+      interp = "Filter terlalu agresif (K tinggi)";
+    else
+      interp = "Gain seimbang";
+
+    Serial.printf("| %s | %.6f | %.6f | %.4f | %s |\n",
+                  final_results[i].filename.c_str(),
+                  final_results[i].diag_avg_K0,
+                  final_results[i].diag_avg_R,
+                  final_results[i].diag_avg_h0,
+                  interp);
+  }
+
+  // =======================================================
   // ANALISIS TRADE-OFF
   // =======================================================
   Serial.println("\n### Analisis Komparasi Trade-Off (Menjawab Formulasi Masalah)");
@@ -489,8 +593,9 @@ void setup()
   Serial.println("  * Sumber: `h-GroundTruth_OCV_SOC_LiFePO4.csv` (Cubic Spline), resolusi 5% SOC");
   Serial.println("* **Deteksi Arus:** Offline preprocessing (edge-triggered state machine di preprocess.py)");
   Serial.printf("* **Q Matriks (Process Noise):** `Q_00` = %.1e, `Q_11` = %.1e\n", Q_NOISE_00, Q_NOISE_11);
-  Serial.printf("* **R Matriks (Measurement Noise):** Dynamic Observability R = %.4f / (|dOCV/dSOC| + 1e-4)\n", R_BASE);
-  Serial.printf("* **P_init (Initial Error Covariance):** `P[0][0]` = %.1f, `P[1][1]` = %.1f\n", 1.0, 0.1);
+  Serial.printf("* **R Matriks (Measurement Noise):** Normalized Trust Factor: R_STEEP=%.4f, R_FLAT=%.4f, R_REST=%.4f\n", R_STEEP, R_FLAT, R_REST);
+  Serial.printf("* **Rest Settling Time:** %.0f s sebelum R_REST aktif\n", REST_SETTLE_S);
+  Serial.printf("* **P_init (Initial Error Covariance):** `P[0][0]` = %.2f, `P[1][1]` = %.1f\n", 0.02, 0.1);
   Serial.println("* **Simulasi Memory Loss:** Algoritma dimulai dengan *offset error* sebesar 10% untuk menguji kekokohan EKF.");
   Serial.println("\n");
 }
