@@ -8,6 +8,7 @@
 struct TestResult
 {
   String filename;
+  int offset_pct;
   float rmse_cc;
   float rmse_ekf;
   float rmse_v;
@@ -21,7 +22,7 @@ struct TestResult
   float diag_avg_R;
   float diag_avg_h0;
 };
-TestResult final_results[5];
+TestResult final_results[15];
 int result_index = 0;
 
 // =========================================================
@@ -207,8 +208,8 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   // Prediksi Covariance P
   float P_pred[2][2];
   P_pred[0][0] = ekf_P[0][0] + Q_NOISE_00;
-  P_pred[0][1] = ekf_P[0][1] * alpha;
-  P_pred[1][0] = ekf_P[1][0] * alpha;
+  P_pred[0][1] = 0.0f; // Decoupled to allow Vc1 stability
+  P_pred[1][0] = 0.0f; // Decoupled to allow Vc1 stability
   P_pred[1][1] = (alpha * alpha * ekf_P[1][1]) + Q_NOISE_11;
 
   // --- Measurement Update (Correction) ---
@@ -256,15 +257,30 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   K[0] = ((P_pred[0][0] * h0) + (P_pred[0][1] * h1)) / S;
   K[1] = ((P_pred[1][0] * h0) + (P_pred[1][1] * h1)) / S;
 
-  // Koreksi State x = x + K*(z - h(x))
+  // --- LOGIKA DEADBAND (KUNCI KESUKSESAN OFFSET 10%) ---
+  float K0_eff = K[0];
   float innov = V_meas - V_pred;
-  ekf_x[0] = constrain(ekf_x[0] + (K[0] * innov), 0.0, 1.0);
-  ekf_x[1] = ekf_x[1] + (K[1] * innov);
 
-  // Update Covariance P (Joseph Form)
+  // Jika error tegangan kurang dari 8mV, kurangi gain secara bertahap (soft scaling)
+  // untuk mencegah hardware mismatch menarik SOC menjauh dari true value.
+  if (fabsf(innov) < 0.008f) {
+      K0_eff *= (fabsf(innov) / 0.008f);
+  }
+
+  // Koreksi State x = x + K*(z - h(x))
+  ekf_x[0] = max(0.0f, min(1.0f, ekf_x[0] + K0_eff * innov));
+  ekf_x[1] += K[1] * innov;
+
+  // Cap Vc1 to prevent numerical explosion
+  if (ekf_x[1] > 0.5f)
+    ekf_x[1] = 0.5f;
+  if (ekf_x[1] < -0.5f)
+    ekf_x[1] = -0.5f;
+
+  // Update Covariance P (Joseph Form) menggunakan K0_eff untuk SOC
   float I_KH[2][2];
-  I_KH[0][0] = 1.0f - (K[0] * h0);
-  I_KH[0][1] = -(K[0] * h1);
+  I_KH[0][0] = 1.0f - (K0_eff * h0);
+  I_KH[0][1] = -(K0_eff * h1);
   I_KH[1][0] = -(K[1] * h0);
   I_KH[1][1] = 1.0f - (K[1] * h1);
 
@@ -274,9 +290,9 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   Temp[1][0] = I_KH[1][0] * P_pred[0][0] + I_KH[1][1] * P_pred[1][0];
   Temp[1][1] = I_KH[1][0] * P_pred[0][1] + I_KH[1][1] * P_pred[1][1];
 
-  ekf_P[0][0] = Temp[0][0] * I_KH[0][0] + Temp[0][1] * I_KH[0][1] + (K[0] * K[0] * R_dynamic);
-  ekf_P[0][1] = Temp[0][0] * I_KH[1][0] + Temp[0][1] * I_KH[1][1] + (K[0] * K[1] * R_dynamic);
-  ekf_P[1][0] = Temp[1][0] * I_KH[0][0] + Temp[1][1] * I_KH[0][1] + (K[1] * K[0] * R_dynamic);
+  ekf_P[0][0] = Temp[0][0] * I_KH[0][0] + Temp[0][1] * I_KH[0][1] + (K0_eff * K0_eff * R_dynamic);
+  ekf_P[0][1] = Temp[0][0] * I_KH[1][0] + Temp[0][1] * I_KH[1][1] + (K0_eff * K[1] * R_dynamic);
+  ekf_P[1][0] = Temp[1][0] * I_KH[0][0] + Temp[1][1] * I_KH[0][1] + (K[1] * K0_eff * R_dynamic);
   ekf_P[1][1] = Temp[1][0] * I_KH[1][0] + Temp[1][1] * I_KH[1][1] + (K[1] * K[1] * R_dynamic);
 
   // Float32 symmetry enforcement & positivity floor
@@ -308,7 +324,7 @@ void runEKFStep(float I_meas, float V_meas, float dt)
 // 7. RUNNER PROCESSOR-IN-THE-LOOP (PiL)
 //    Input: preprocessed CSV with Dir_Cur(A) column (signed)
 // =========================================================
-bool runDatasetTest(String filename)
+bool runDatasetTest(String filename, float offset_pct_val)
 {
   File file = LittleFS.open("/" + filename, "r");
   if (!file)
@@ -390,8 +406,9 @@ bool runDatasetTest(String filename)
       else
         soc_true = 0.5f;
 
-      float soc_algo_start = (soc_true < 0.10f) ? (soc_true + 0.10f) : (soc_true - 0.10f);
-
+      // Offset error
+      float soc_algo_start = (soc_true < 0.10f) ? (soc_true + offset_pct_val) : (soc_true - offset_pct_val);
+      
       soc_cc = soc_algo_start;
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
@@ -443,6 +460,7 @@ bool runDatasetTest(String filename)
   if (result_index < 5)
   {
     final_results[result_index].filename = filename.substring(0, 20);
+    final_results[result_index].offset_pct = (int)(offset_pct_val * 100);
     final_results[result_index].rmse_cc = sqrt(sum_sq_err_cc / total_samples) * 100.0;
     final_results[result_index].rmse_ekf = sqrt(sum_sq_err_ekf_soc / total_samples) * 100.0;
     final_results[result_index].rmse_v = sqrt(sum_sq_err_ekf_v / total_samples) * 1000.0;
@@ -486,26 +504,26 @@ void setup()
 
   result_index = 0;
 
-  if (!runDatasetTest("clean_h-charge_rest_60m.csv"))
-    return;
-  if (!runDatasetTest("clean_h-DCC-4.4A-2.5V.csv"))
-    return;
-  if (!runDatasetTest("clean_h-Dynamic_Profiling_(Urban Load).csv"))
-    return;
-  if (!runDatasetTest("clean_h-charging_7.33A-rest 2h.csv"))
-    return;
-  if (!runDatasetTest("clean_h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv"))
-    return;
+  float offsets[] = {0.0f, 0.05f, 0.10f};
+  for (int i = 0; i < 3; i++) {
+    Serial.printf("\n[INFO] Menjalankan simulasi dengan Offset Error: %d%%\n", (int)(offsets[i] * 100));
+    if (!runDatasetTest("clean_h-charge_rest_60m.csv", offsets[i])) return;
+    if (!runDatasetTest("clean_h-DCC-4.4A-2.5V.csv", offsets[i])) return;
+    if (!runDatasetTest("clean_h-Dynamic_Profiling_(Urban Load).csv", offsets[i])) return;
+    if (!runDatasetTest("clean_h-charging_7.33A-rest 2h.csv", offsets[i])) return;
+    if (!runDatasetTest("clean_h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv", offsets[i])) return;
+  }
 
   // =======================================================
   // CETAK TABEL HASIL (FORMAT RAW)
   // =======================================================
-  Serial.println("\n===============================================================================================================================================");
-  Serial.println("| NAMA DATASET         | RMSE CC (%) | RMSE EKF (%) | MAE CC (%) | MAE EKF (%) | RMSE V (mV) | MAE V (mV) | Waktu CC (us) | Waktu EKF (us) |");
-  Serial.println("===============================================================================================================================================");
+  Serial.println("\n=====================================================================================================================================================");
+  Serial.println("| OFFSET | NAMA DATASET         | RMSE CC (%) | RMSE EKF (%) | MAE CC (%) | MAE EKF (%) | RMSE V (mV) | MAE V (mV) | Waktu CC (us) | Waktu EKF (us) |");
+  Serial.println("=====================================================================================================================================================");
   for (int i = 0; i < result_index; i++)
   {
-    Serial.printf("| %-20s | %11.4f | %12.4f | %10.4f | %11.4f | %11.4f | %10.4f | %13.2f | %14.2f |\n",
+    Serial.printf("| %3d%%  | %-20s | %11.4f | %12.4f | %10.4f | %11.4f | %11.4f | %10.4f | %13.2f | %14.2f |\n",
+                  final_results[i].offset_pct,
                   final_results[i].filename.c_str(),
                   final_results[i].rmse_cc,
                   final_results[i].rmse_ekf,
@@ -516,7 +534,7 @@ void setup()
                   final_results[i].avg_exec_time_cc_us,
                   final_results[i].avg_exec_time_ekf_us);
   }
-  Serial.println("===============================================================================================================================================");
+  Serial.println("=====================================================================================================================================================");
 
   // =======================================================
   // CETAK FORMAT MARKDOWN
@@ -524,12 +542,13 @@ void setup()
   Serial.println("\n\n");
   Serial.println("## Tabel Hasil Perbandingan Metrik (RMSE & MAE)");
   Serial.println("Tabel berikut menyajikan komparasi performa estimasi antara Coulomb Counting (CC) dan Extended Kalman Filter (EKF):");
-  Serial.println("\n| NAMA DATASET | RMSE SoC CC (%) | RMSE SoC EKF (%) | MAE SoC CC (%) | MAE SoC EKF (%) | RMSE V EKF (mV) | MAE V EKF (mV) |");
-  Serial.println("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |");
+  Serial.println("\n| OFFSET | NAMA DATASET | RMSE SoC CC (%) | RMSE SoC EKF (%) | MAE SoC CC (%) | MAE SoC EKF (%) | RMSE V EKF (mV) | MAE V EKF (mV) |");
+  Serial.println("| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: |");
 
   for (int i = 0; i < result_index; i++)
   {
-    Serial.printf("| %s | %.4f | %.4f | %.4f | %.4f | %.4f | %.4f |\n",
+    Serial.printf("| %d%% | %s | %.4f | %.4f | %.4f | %.4f | %.4f | %.4f |\n",
+                  final_results[i].offset_pct,
                   final_results[i].filename.c_str(),
                   final_results[i].rmse_cc,
                   final_results[i].rmse_ekf,
