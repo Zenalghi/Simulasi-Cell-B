@@ -32,63 +32,92 @@ def get_dOCV_dSOC_LUT(soc):
     if dSOC < 1e-6: return 0.0
     return (get_OCV_from_LUT(soc_hi) - get_OCV_from_LUT(soc_lo)) / dSOC
 
-def runEKFStep(I_meas, V_meas, dt, ekf_x, ekf_P):
-    Q_NOISE_00 = 5e-5
-    Q_NOISE_11 = 2e-3
+def runEKFStep(I_meas, V_meas, dt, ekf_x, ekf_P, in_confirmed_rest):
+    # Noise parameters to tune
+    Q_NOISE_00 = 2e-6
+    Q_NOISE_11 = 1e-1
     R_BASE = 0.0001
+    R_REST = 0.0001
+    
     soc_prev = constrain(ekf_x[0], 0.0, 1.0)
     vc1_prev = ekf_x[1]
+    
     R0 = max(interpolate1D(soc_prev, lut_soc_ecm, lut_r0), 0.0001)
     R1 = max(interpolate1D(soc_prev, lut_soc_ecm, lut_r1), 0.0001)
     C1 = max(interpolate1D(soc_prev, lut_soc_ecm, lut_c1), 1.0)
     tau = max(R1 * C1, 0.000001)
+    
     soc_pred = constrain(soc_prev - (I_meas * dt / Q_COULOMB), 0.0, 1.0)
     alpha = math.exp(-dt / tau) if dt > 0 else 1.0
     vc1_pred = (alpha * vc1_prev) + (R1 * (1.0 - alpha) * I_meas)
+    
+    ekf_x[0] = soc_pred
+    ekf_x[1] = vc1_pred
+    
     P_pred = [[0.0, 0.0], [0.0, 0.0]]
     P_pred[0][0] = ekf_P[0][0] + Q_NOISE_00
     P_pred[0][1] = 0.0
     P_pred[1][0] = 0.0
     P_pred[1][1] = (alpha * alpha * ekf_P[1][1]) + Q_NOISE_11
+    
     OCV_pred = get_OCV_from_LUT(soc_pred)
     dOCV_dSOC = get_dOCV_dSOC_LUT(soc_pred)
     V_pred = OCV_pred - vc1_pred - (I_meas * R0)
-    h0 = max(abs(dOCV_dSOC), 0.05)
+    
+    h0 = abs(dOCV_dSOC) + 1e-4
     h1 = -1.0
-    R_dynamic = R_BASE
-    if abs(I_meas) < 0.05: R_dynamic = 0.001
+    
+    if in_confirmed_rest:
+        R_dynamic = R_REST
+    elif abs(I_meas) < 0.05:
+        R_dynamic = R_BASE / (abs(dOCV_dSOC) + 1e-3)
+    else:
+        R_dynamic = R_BASE / (abs(dOCV_dSOC) + 1e-4)
+    R_dynamic = constrain(R_dynamic, 1e-6, 10.0)
+    
     S = (h0 * h0 * P_pred[0][0]) + (h0 * h1 * P_pred[0][1]) + \
         (h1 * h0 * P_pred[1][0]) + (h1 * h1 * P_pred[1][1]) + R_dynamic
+    if S < 1e-9: S = 1e-9
+    
     K = [0.0, 0.0]
     K[0] = ((P_pred[0][0] * h0) + (P_pred[0][1] * h1)) / S
     K[1] = ((P_pred[1][0] * h0) + (P_pred[1][1] * h1)) / S
+    
     K0_eff = K[0]
     innov = V_meas - V_pred
-    deadband = 0.008
+    
+    deadband = 0.001
     if abs(innov) < deadband:
         K0_eff *= (abs(innov) / deadband)
-    ekf_x[0] = max(0.0, min(1.0, soc_pred + K0_eff * innov))
-    ekf_x[1] = vc1_pred + K[1] * innov
+        
+    ekf_x[0] = max(0.0, min(1.0, ekf_x[0] + K0_eff * innov))
+    ekf_x[1] += K[1] * innov
+    
     if ekf_x[1] > 0.5: ekf_x[1] = 0.5
     if ekf_x[1] < -0.5: ekf_x[1] = -0.5
+    
     I_KH = [[0.0, 0.0], [0.0, 0.0]]
     I_KH[0][0] = 1.0 - (K0_eff * h0)
     I_KH[0][1] = -(K0_eff * h1)
     I_KH[1][0] = -(K[1] * h0)
     I_KH[1][1] = 1.0 - (K[1] * h1)
+    
     Temp = [[0.0, 0.0], [0.0, 0.0]]
     Temp[0][0] = I_KH[0][0] * P_pred[0][0] + I_KH[0][1] * P_pred[1][0]
     Temp[0][1] = I_KH[0][0] * P_pred[0][1] + I_KH[0][1] * P_pred[1][1]
     Temp[1][0] = I_KH[1][0] * P_pred[0][0] + I_KH[1][1] * P_pred[1][0]
     Temp[1][1] = I_KH[1][0] * P_pred[0][1] + I_KH[1][1] * P_pred[1][1]
+    
     ekf_P[0][0] = Temp[0][0] * I_KH[0][0] + Temp[0][1] * I_KH[0][1] + (K0_eff * K0_eff * R_dynamic)
     ekf_P[0][1] = Temp[0][0] * I_KH[1][0] + Temp[0][1] * I_KH[1][1] + (K0_eff * K[1] * R_dynamic)
     ekf_P[1][0] = Temp[1][0] * I_KH[0][0] + Temp[1][1] * I_KH[0][1] + (K[1] * K0_eff * R_dynamic)
     ekf_P[1][1] = Temp[1][0] * I_KH[1][0] + Temp[1][1] * I_KH[1][1] + (K[1] * K[1] * R_dynamic)
+    
     ekf_P[0][1] = (ekf_P[0][1] + ekf_P[1][0]) * 0.5
     ekf_P[1][0] = ekf_P[0][1]
     ekf_P[0][0] = max(ekf_P[0][0], 1e-10)
     ekf_P[1][1] = max(ekf_P[1][1], 1e-10)
+    
     return V_pred
 
 files = [
@@ -118,26 +147,40 @@ for filename in files:
         
         soc_algo_start = (soc_true + offset) if soc_true < 0.1 else (soc_true - offset)
         ekf_x = [soc_algo_start, 0.0]
-        # Test large P init
-        ekf_P = [[0.5, 0.0], [0.0, 0.1]]
+        ekf_P = [[abs(offset) * 50.0 + 0.01, 0.0], [0.0, 0.001]]
         
         sum_sq_err_ekf_soc = 0.0
         sum_sq_err_ekf_v = 0.0
         total_samples = 0
         time_prev = data[0][0]
+        
+        rest_counter_s = 0
+        in_confirmed_rest = False
+        
         for i in range(1, len(data)):
             t, current, voltage = data[i]
             dt = t - time_prev
             if dt <= 0: continue
             time_prev = t
             soc_true = constrain(soc_true - (current * dt / Q_COULOMB), 0.0, 1.0)
-            v_pred = runEKFStep(current, voltage, dt, ekf_x, ekf_P)
+            
+            if abs(current) < 0.05:
+                rest_counter_s += dt
+                if rest_counter_s >= 30:
+                    in_confirmed_rest = True
+            else:
+                rest_counter_s = 0
+                in_confirmed_rest = False
+                
+            v_pred = runEKFStep(current, voltage, dt, ekf_x, ekf_P, in_confirmed_rest)
             err_soc = soc_true - ekf_x[0]
             err_v = voltage - v_pred
             sum_sq_err_ekf_soc += err_soc * err_soc
             sum_sq_err_ekf_v += err_v * err_v
             total_samples += 1
+            if offset == 0.1 and "DCC-4.4" in filename and total_samples < 5:
+                print(f"Step {total_samples}: true={soc_true:.4f}, ekf={ekf_x[0]:.4f}, K0={ekf_P[0][0]:.4f}, err_v={err_v:.4f}")
         rmse_soc = math.sqrt(sum_sq_err_ekf_soc / total_samples) * 100.0
         rmse_v = math.sqrt(sum_sq_err_ekf_v / total_samples) * 1000.0
-        print(f"File: {filename[:15]} offset: {offset} -> SOC: {rmse_soc:.2f}%, V: {rmse_v:.2f}mV", flush=True)
+        print(f"File: {filename[:15]} offset: {offset} -> SOC: {rmse_soc:.2f}%, V: {rmse_v:.2f}mV (Final SOC true: {soc_true:.4f}, EKF SOC: {ekf_x[0]:.4f})", flush=True)
 

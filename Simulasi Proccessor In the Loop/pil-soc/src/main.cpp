@@ -59,9 +59,9 @@ const float lut_c1[LUT_ECM_SIZE] = {
 // Q_00: process noise for SoC — small for smooth tracking
 // Q_11: process noise for Vc1 — larger allows RC dynamics to follow fast transients
 // Reverted to esp8 basis: best voltage RMSE (<3mV avg), SoC RMSE <5% at all offsets
-const float Q_NOISE_00 = 1e-6f;
-const float Q_NOISE_11 = 1e-1f;
-const float R_BASE = 0.0001f;
+const float Q_NOISE_00 = 2e-6f;
+float Q_NOISE_11 = 1e-1f;
+float R_BASE = 0.0001f;
 
 // Rest detection: R becomes very small (trust measurement) after REST_SETTLE_S seconds
 // of near-zero current. Allows OCV-based SoC correction during idle.
@@ -219,18 +219,15 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   float R_dynamic;
   if (in_confirmed_rest)
   {
-    // During confirmed rest, OCV = terminal voltage → very accurate SOC correction
     R_dynamic = R_REST;
   }
-  else if (fabsf(I_meas) < REST_CURRENT_THRESH)
+  else if (abs(I_meas) < 0.05f)
   {
-    // Near-rest but not yet settled — moderate trust
-    R_dynamic = R_BASE / (fabsf(dOCV_dSOC) + 1e-3f);
+    R_dynamic = R_BASE / (abs(dOCV_dSOC) + 1e-3f);
   }
   else
   {
-    // Active: standard dynamic R
-    R_dynamic = R_BASE / (fabsf(dOCV_dSOC) + 1e-4f);
+    R_dynamic = R_BASE / (abs(dOCV_dSOC) + 1e-4f);
   }
 
   // Clamp R_dynamic to prevent numerical issues
@@ -247,15 +244,15 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   K[0] = ((P_pred[0][0] * h0) + (P_pred[0][1] * h1)) / S;
   K[1] = ((P_pred[1][0] * h0) + (P_pred[1][1] * h1)) / S;
 
-  // --- SOFT DEADBAND (tightened: 3mV threshold, was 8mV) ---
+  // --- SOFT DEADBAND (tightened: 1mV threshold) ---
   // Suppresses correction for tiny innovations caused by model mismatch,
   // but allows full correction for real errors.
   float K0_eff = K[0];
   float innov = V_meas - V_pred;
 
-  if (fabsf(innov) < 0.003f)
+  if (fabsf(innov) < 0.001f)
   {
-    K0_eff *= (fabsf(innov) / 0.003f);
+    K0_eff *= (fabsf(innov) / 0.001f);
   }
 
   // Koreksi State x = x + K*(z - h(x))
@@ -382,11 +379,11 @@ bool runDatasetTest(String filename, float offset_pct_val)
       ekf_x[0] = soc_algo_start;
       ekf_x[1] = 0.0;
 
-      // P[0][0] = offset^2 + 0.01 (was 0.05 — too large, caused slow convergence at 0% offset)
-      ekf_P[0][0] = (offset_pct_val * offset_pct_val) + 0.01f;
+      // P[0][0] dynamic initialization for fast convergence at high offset
+      ekf_P[0][0] = (abs(offset_pct_val) * 50.0f) + 0.01f;
       ekf_P[0][1] = 0.0f;
       ekf_P[1][0] = 0.0f;
-      ekf_P[1][1] = 0.1f;
+      ekf_P[1][1] = 0.001f;
 
       total_samples++;
       continue;
