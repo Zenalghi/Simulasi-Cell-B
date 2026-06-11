@@ -121,11 +121,11 @@ def runEKFStep(I_meas, V_meas, dt, ekf_x, ekf_P, in_confirmed_rest):
     return V_pred
 
 files = [
-    "clean_h-charge_rest_60m.csv",
-    "clean_h-DCC-4.4A-2.5V.csv",
-    "clean_h-Dynamic_Profiling_(Urban Load).csv",
-    "clean_h-charging_7.33A-rest 2h.csv",
-    "clean_h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv"
+    "dataset_ocv_soc_cc_cv_0.25c_rest_60m.csv",
+    "dataset_dcc_0.22c_discharge_constant_2.5v.csv",
+    "dataset_dynamic_profiling_urban_load.csv",
+    "dataset_fast_charging_0.35c_rest_2h.csv",
+    "dataset_capacity_measurement_dcc_cc_cv_dcc.csv"
 ]
 for filename in files:
     filepath = os.path.join("data", filename)

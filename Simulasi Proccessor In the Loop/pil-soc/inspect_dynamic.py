@@ -5,7 +5,7 @@ from pathlib import Path
 DATA_DIR = Path('data')
 
 # --- Inspeksi dataset Dynamic Profiling ---
-fname = 'clean_h-Dynamic_Profiling_(Urban Load).csv'
+fname = 'dataset_dynamic_profiling_urban_load.csv'
 df = pd.read_csv(DATA_DIR / fname)
 
 print('=== INSPEKSI DATASET Dynamic Profiling ===')

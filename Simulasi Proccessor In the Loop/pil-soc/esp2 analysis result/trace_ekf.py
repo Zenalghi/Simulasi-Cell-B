@@ -35,7 +35,7 @@ def get_docv(soc):
 
 # Load first 30 samples
 rows = []
-with open(f"{DATA_DIR}/clean_h-charge_rest_60m.csv") as f:
+with open(f"{DATA_DIR}/dataset_ocv_soc_cc_cv_0.25c_rest_60m.csv") as f:
     reader = csv.reader(f)
     next(reader)
     for row in reader:

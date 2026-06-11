@@ -31,7 +31,7 @@ def get_docv(soc):
     ds = hi-lo; return (get_ocv(hi)-get_ocv(lo))/ds if ds > 1e-6 else 0
 
 rows = []
-with open(f"{DATA_DIR}/clean_h-charge_rest_60m.csv") as f:
+with open(f"{DATA_DIR}/dataset_ocv_soc_cc_cv_0.25c_rest_60m.csv") as f:
     reader = csv.reader(f); next(reader)
     for row in reader:
         if len(row) >= 3:

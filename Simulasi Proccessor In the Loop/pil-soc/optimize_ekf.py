@@ -65,11 +65,11 @@ lut_c1 = np.array([11281.15, 20591.86, 24841.48, 15061.40, 20897.75,
 Q_COULOMB = 74874.8
 
 SOC_INIT_MAP = {
-    'clean_h-charge_rest_60m.csv':                      0.00,
-    'clean_h-DCC-4.4A-2.5V.csv':                        1.00,
-    'clean_h-Dynamic_Profiling_(Urban Load).csv':        1.00,
-    'clean_h-charging_7.33A-rest 2h.csv':               0.06,
-    'clean_h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv': 0.01,
+    'dataset_ocv_soc_cc_cv_0.25c_rest_60m.csv':                      0.00,
+    'dataset_dcc_0.22c_discharge_constant_2.5v.csv':                        1.00,
+    'dataset_dynamic_profiling_urban_load.csv':        1.00,
+    'dataset_fast_charging_0.35c_rest_2h.csv':               0.06,
+    'dataset_capacity_measurement_dcc_cc_cv_dcc.csv': 0.01,
 }
 
 def interp1d(x, xd, yd):
