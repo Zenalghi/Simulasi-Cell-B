@@ -1,3 +1,5 @@
+#define JALANKAN_MODE 2 // 1: Hanya Coulomb Counting (Flash Baseline), 2: CC + EKF (Sistem Penuh)
+
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <math.h>
@@ -17,6 +19,8 @@ struct TestResult
   float mae_v;
   float avg_exec_time_cc_us;
   float avg_exec_time_ekf_us;
+  float max_sram_cc;   // VARIABEL BARU
+  float max_sram_ekf;  // VARIABEL BARU
 };
 TestResult final_results[15];
 int result_index = 0;
@@ -353,6 +357,8 @@ bool runDatasetTest(String filename, float offset_pct_val)
 
   uint64_t total_exec_time_cc_us = 0;
   uint64_t total_exec_time_ekf_us = 0;
+  size_t max_cc_stack_consumed = 0;
+  size_t max_ekf_stack_consumed = 0;
 
   float time_prev = -1.0;
   char buf[128];
@@ -435,15 +441,33 @@ bool runDatasetTest(String filename, float offset_pct_val)
       in_confirmed_rest = false;
     }
 
+    // --- Pengukuran SRAM & Waktu untuk Coulomb Counting ---
+    size_t stack_awal = uxTaskGetStackHighWaterMark(NULL);
+    
     uint32_t t_start_cc = micros();
     runCCStep(current, dt);
     uint32_t t_end_cc = micros();
     total_exec_time_cc_us += (t_end_cc - t_start_cc);
+    
+    size_t stack_after_cc = uxTaskGetStackHighWaterMark(NULL);
+    size_t cc_sram_used = stack_awal - stack_after_cc;
+    if (cc_sram_used > max_cc_stack_consumed && total_samples >= 10) {
+        max_cc_stack_consumed = cc_sram_used;
+    }
 
+    // --- Pengukuran SRAM & Waktu untuk EKF (Hanya aktif jika MODE 2) ---
+    #if JALANKAN_MODE == 2
     uint32_t t_start_ekf = micros();
     runEKFStep(current, voltage, dt);
     uint32_t t_end_ekf = micros();
     total_exec_time_ekf_us += (t_end_ekf - t_start_ekf);
+
+    size_t stack_after_ekf = uxTaskGetStackHighWaterMark(NULL);
+    size_t ekf_sram_used = stack_after_cc - stack_after_ekf;
+    if (ekf_sram_used > max_ekf_stack_consumed && total_samples >= 10) {
+        max_ekf_stack_consumed = ekf_sram_used;
+    }
+    #endif
 
     double err_cc = soc_true - soc_cc;
     double err_ekf = soc_true - ekf_x[0];
@@ -475,6 +499,14 @@ bool runDatasetTest(String filename, float offset_pct_val)
 
     final_results[result_index].avg_exec_time_cc_us = (total_samples > 0) ? ((float)total_exec_time_cc_us / total_samples) : 0;
     final_results[result_index].avg_exec_time_ekf_us = (total_samples > 0) ? ((float)total_exec_time_ekf_us / total_samples) : 0;
+
+    final_results[result_index].max_sram_cc = max_cc_stack_consumed;
+    #if JALANKAN_MODE == 2
+    final_results[result_index].max_sram_ekf = max_ekf_stack_consumed;
+    #else
+    final_results[result_index].max_sram_ekf = 0;
+    #endif
+
     result_index++;
   }
   Serial.println("[INFO] Selesai.\n");
@@ -571,16 +603,21 @@ void setup()
   Serial.println("| :--- | :---: | :---: | :---: |");
 
   float avg_cc_time = 0, avg_ekf_time = 0;
+  float avg_cc_sram = 0, avg_ekf_sram = 0;
   for (int i = 0; i < result_index; i++)
   {
     avg_cc_time += final_results[i].avg_exec_time_cc_us;
     avg_ekf_time += final_results[i].avg_exec_time_ekf_us;
+    avg_cc_sram += final_results[i].max_sram_cc;
+    avg_ekf_sram += final_results[i].max_sram_ekf;
   }
   avg_cc_time /= (result_index > 0) ? result_index : 1;
   avg_ekf_time /= (result_index > 0) ? result_index : 1;
+  avg_cc_sram /= (result_index > 0) ? result_index : 1;
+  avg_ekf_sram /= (result_index > 0) ? result_index : 1;
 
-  Serial.printf("| **Coulomb Counting** | %.2f | ~16 | O(1) Constant Time |\n", avg_cc_time);
-  Serial.printf("| **Extended Kalman Filter** | %.2f | ~3200 (3.2 kB) | O(n^3) Cubic Time |\n", avg_ekf_time);
+  Serial.printf("| **Coulomb Counting** | %.2f | %.0f Bytes | O(1) Constant Time |\n", avg_cc_time, avg_cc_sram);
+  Serial.printf("| **Extended Kalman Filter** | %.2f | %.0f Bytes | O(n^3) Cubic Time |\n", avg_ekf_time, avg_ekf_sram);
 
   Serial.println("\n*Catatan Analitik: Penggunaan memori EKF dihitung secara teoritis berdasarkan alokasi matriks Jacobian, array Kalman Gain, dan tabel lookup ECM pada memori Stack lokal, karena RTOS membebaskan memori tersebut secara instan setelah fungsi mengembalikan nilai (return).*");
 
