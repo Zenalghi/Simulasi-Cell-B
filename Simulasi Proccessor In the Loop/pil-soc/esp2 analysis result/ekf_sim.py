@@ -171,11 +171,11 @@ def run_ekf_sim(data, soc_true_init, soc_algo_init, Q00, Q11, r_func, P00_init=1
 
 # Dataset configs
 DATASETS = [
-    ("clean_h-charge_rest_60m.csv", 0.0, "Charge+Rest"),
-    ("clean_h-DCC-4.4A-2.5V.csv", 1.0, "DCC 4.4A"),
-    ("clean_h-Dynamic_Profiling_(Urban Load).csv", 1.0, "Dynamic"),
-    ("clean_h-charging_7.33A-rest 2h.csv", 0.06, "Charge 7.33A"),
-    ("clean_h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv", 0.01, "DCC-CCV-DCC"),
+    ("dataset_ocv_soc_cc_cv_0.25c_rest_60m.csv", 0.0, "Charge+Rest"),
+    ("dataset_dcc_0.22c_discharge_constant_2.5v.csv", 1.0, "DCC 4.4A"),
+    ("dataset_dynamic_profiling_urban_load.csv", 1.0, "Dynamic"),
+    ("dataset_fast_charging_0.35c_rest_2h.csv", 0.06, "Charge 7.33A"),
+    ("dataset_capacity_measurement_dcc_cc_cv_dcc.csv", 0.01, "DCC-CCV-DCC"),
 ]
 
 # R-matrix strategies to test

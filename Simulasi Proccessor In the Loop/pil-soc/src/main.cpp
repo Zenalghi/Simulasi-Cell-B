@@ -83,7 +83,7 @@ float R_BASE = 1e-4f;
 // Memungkinkan koreksi SoC berbasis OCV saat idle (observabilitas tinggi)
 const float REST_CURRENT_THRESH = 0.05f; // A — di bawah ini = rest
 const int REST_SETTLE_S = 30;            // detik konfirmasi rest sebelum R_REST aktif
-const float R_REST = 1e-4f;             // agresif saat confirmed rest (sama R_BASE)
+const float R_REST = 1e-4f;              // agresif saat confirmed rest (sama R_BASE)
 
 // =========================================================
 // 4. VARIABEL STATE ESTIMATION & ERROR TRACKING
@@ -271,7 +271,7 @@ void runEKFStep(float I_meas, float V_meas, float dt)
   // misal saat EKF di region slope curam dengan large innovation.
   float K0_eff = K[0];
   float innov = V_meas - V_pred;
-  const float DEADBAND = 0.001f; // 1 mV
+  const float DEADBAND = 0.001f;      // 1 mV
   const float MAX_CORRECTION = 0.10f; // maks 10% SoC per langkah
 
   if (fabsf(innov) < DEADBAND)
@@ -281,8 +281,10 @@ void runEKFStep(float I_meas, float V_meas, float dt)
 
   // Apply correction with cap
   float soc_correction = K0_eff * innov;
-  if (soc_correction > MAX_CORRECTION) soc_correction = MAX_CORRECTION;
-  if (soc_correction < -MAX_CORRECTION) soc_correction = -MAX_CORRECTION;
+  if (soc_correction > MAX_CORRECTION)
+    soc_correction = MAX_CORRECTION;
+  if (soc_correction < -MAX_CORRECTION)
+    soc_correction = -MAX_CORRECTION;
 
   // Koreksi State x = x + correction (capped)
   ekf_x[0] = max(0.0f, min(1.0f, ekf_x[0] + soc_correction));
@@ -390,16 +392,15 @@ bool runDatasetTest(String filename, float offset_pct_val)
     // --- Inisialisasi sample pertama ---
     if (total_samples == 0)
     {
-      if (filename == "clean_h-charge_rest_60m.csv")
+      if (filename == "dataset_ocv_soc_cc_cv_0.25c_rest_60m.csv")
         soc_true = 0.0f;
-      else if (filename == "clean_h-DCC-4.4A-2.5V.csv")
+      else if (filename == "dataset_dcc_0.22c_discharge_constant_2.5v.csv")
         soc_true = 1.0f;
-      else if (filename == "clean_h-Dynamic_Profiling_(Urban Load).csv")
-        // FIX 3: V_init(I=0)=3.420V → OCV_inverse → SoC≈0.953 (bukan 1.0!)
+      else if (filename == "dataset_dynamic_profiling_urban_load.csv")
         soc_true = 0.953f;
-      else if (filename == "clean_h-charging_7.33A-rest 2h.csv")
+      else if (filename == "dataset_fast_charging_0.35c_rest_2h.csv")
         soc_true = 0.06f;
-      else if (filename == "clean_h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv")
+      else if (filename == "dataset_capacity_measurement_dcc_cc_cv_dcc.csv")
         soc_true = 0.01f;
       else
         soc_true = 0.5f;
@@ -538,15 +539,15 @@ void setup()
   for (int i = 0; i < 3; i++)
   {
     Serial.printf("\n[INFO] Menjalankan simulasi dengan Offset Error: %d%%\n", (int)(offsets[i] * 100));
-    if (!runDatasetTest("clean_h-charge_rest_60m.csv", offsets[i]))
+    if (!runDatasetTest("dataset_ocv_soc_cc_cv_0.25c_rest_60m.csv", offsets[i]))
       return;
-    if (!runDatasetTest("clean_h-DCC-4.4A-2.5V.csv", offsets[i]))
+    if (!runDatasetTest("dataset_dcc_0.22c_discharge_constant_2.5v.csv", offsets[i]))
       return;
-    if (!runDatasetTest("clean_h-Dynamic_Profiling_(Urban Load).csv", offsets[i]))
+    if (!runDatasetTest("dataset_dynamic_profiling_urban_load.csv", offsets[i]))
       return;
-    if (!runDatasetTest("clean_h-charging_7.33A-rest 2h.csv", offsets[i]))
+    if (!runDatasetTest("dataset_fast_charging_0.35c_rest_2h.csv", offsets[i]))
       return;
-    if (!runDatasetTest("clean_h-DCC_4.4A_2.5V-CCV_6.6_3.65V-DCC_4.4A_2.5V.csv", offsets[i]))
+    if (!runDatasetTest("dataset_capacity_measurement_dcc_cc_cv_dcc.csv", offsets[i]))
       return;
   }
 
