@@ -121,6 +121,48 @@ pil-soc/
 ---
 
 ### Pertanyaan 1
+> *"Berikan lampiran data akurasi pembacaan SOC dari vendor, untuk membuktikan metode EKF yang dipilih lebih baik dari akurasi bawaan vendor."*
+
+**Sumber data:** Eksperimen nyata menggunakan baterai 8S LiFePO4 + JK BMS, direkam via MQTT selama **83 menit** (4.981 sampel).
+File log: `c:/homeesp/soc_experiment/data_logs/bms_session_20260710_144650.csv`
+Script analisis: `c:/homeesp/soc_experiment/ekf_replayer.py`
+
+**Tampilkan:** Grafik 4-panel dari `ekf_replayer.py` + ringkasan teks
+
+![Perbandingan SOC EKF vs JK BMS Vendor](../../../../homeesp/soc_experiment/data_logs/result_20260710_162454.png)
+
+**Ringkasan hasil eksperimen (`summary_20260710_162454.txt`):**
+```
+=================================================================
+  RINGKASAN PERBANDINGAN AKURASI SOC
+  Durasi: 83.0 menit | Sampel: 4981
+  Referensi SOC awal (OCV): 14.56%  |  JK BMS klaim: 30.0%
+  Error vendor t=0: +15.44% (overestimate)
+-----------------------------------------------------------------
+  Metode                       RMSE (%SOC)   MAE (%SOC)
+-----------------------------------------------------------------
+  SOC JK BMS (Vendor)              0.9817        0.8860
+  SOC EKF (Algoritma TA)           0.3684        0.3468
+-----------------------------------------------------------------
+  Perbaikan RMSE: +62.5%  |  Perbaikan MAE: +60.9%
+  EKF LEBIH AKURAT
+=================================================================
+```
+
+**Jawab:**
+> "Eksperimen perbandingan dilakukan langsung pada hardware nyata — baterai 8S LiFePO4 dengan JK BMS komersial — menggunakan data real-time yang direkam selama 83 menit.
+>
+> Masalah mendasar pada BMS vendor ditemukan sejak t=0: **JK BMS mengklaim SoC = 30%, padahal OCV menunjukkan SoC sebenarnya = 14.6%** — selisih 15.4% hanya di titik awal. Ini terjadi karena BMS komersial tidak selalu mampu mengukur SoC berbasis OCV secara akurat; BMS seringkali hanya reset saat baterai penuh/kosong, sehingga akumulasi error tak terkoreksi.
+>
+> Hasil pengukuran menunjukkan:
+> - **JK BMS Vendor:** RMSE = **0.9817%**, MAE = **0.8860%**
+> - **EKF (Algoritma TA):** RMSE = **0.3684%**, MAE = **0.3468%**
+>
+> EKF berhasil **mengurangi RMSE sebesar 62.5%** dan **MAE sebesar 60.9%** dibandingkan akurasi bawaan vendor. Grafik panel 2 (Residual Error) memperlihatkan error JK BMS yang terus berfluktuasi antara 0 hingga −1.5%, sedangkan error EKF terjaga mendekati nol sepanjang waktu pengujian."
+
+---
+
+### Pertanyaan 2
 > *"Ubah tabel-tabel data menjadi grafik visual yang informatif. Sediakan grafik garis
 > perbandingan SoC Riil vs SoC Estimasi EKF vs SoC Coulomb Counting dalam satu sumbu waktu."*
 
@@ -147,7 +189,7 @@ pil-soc/
 
 ---
 
-### Pertanyaan 2
+### Pertanyaan 3
 > *"Sediakan grafik batang nilai RMSE pada variasi parameter derau proses (Q) dan
 > derau pengukuran (R) untuk memperjelas mengapa nilai penyetelan tertentu dipilih."*
 
@@ -174,7 +216,7 @@ pil-soc/
 
 ---
 
-### Pertanyaan 3
+### Pertanyaan 4
 > *"Berikan penjelasan bahwa RMSE dan MAE yang dihitung outputnya benar."*
 
 **Tampilkan (berurutan):**
@@ -251,14 +293,18 @@ src/main.cpp  (kode C++ ESP32)
     │                               visualize_bab4.py
     │                               verify_rmse.py
     │
-    ├── menggunakan data ──────────► data/*.csv
+    ├── menggunakan data ──────────► data/*.csv  (dataset PIL)
     │
-    └── hasil eksperimen ──────────► Pengujian 1 (esp13.md)
-                                     Pengujian 2 (esp14.md)
-                                     Pengujian 3 (esp15.md)  ← dipakai di Bab 4
+    ├── hasil eksperimen ──────────► Pengujian 1 (esp13.md)
+    │                               Pengujian 2 (esp14.md)
+    │                               Pengujian 3 (esp15.md)  ← dipakai di Bab 4
+    │
+    └── dibandingkan dengan ───────► soc_experiment/ekf_replayer.py
+                                     vs JK BMS (Vendor) ← Pertanyaan 1
 ```
 
 > **Catatan:** File `esp13.md`, `esp14.md`, `esp15.md` adalah log hasil eksperimen
-> nyata yang dijalankan di hardware ESP32. Nilai-nilai di dalamnya adalah output
-> Serial Monitor yang dicatat dan disimpan, bukan hasil kalkulasi Python.
-> Python hanya digunakan sebagai **alat verifikasi independen**.
+> nyata yang dijalankan di hardware ESP32 dalam skenario Processor-In-the-Loop (PIL).
+> File `ekf_replayer.py` di folder `homeesp/soc_experiment/` adalah eksperimen
+> terpisah yang membandingkan EKF dengan BMS vendor (JK BMS) pada baterai nyata.
+> Python hanya digunakan sebagai **alat verifikasi dan analisis independen**.
