@@ -1,4 +1,4 @@
-﻿"""
+"""
 visualize_bab4.py — Grafik khusus untuk Bab 4 Skripsi
 Menghasilkan grafik yang persis sesuai tabel di slide bab4:
   - Dataset 1: Constant Charging 5A     (dataset_ocv_soc_cc_cv_0.25c_rest_60m.csv)
@@ -269,47 +269,61 @@ def plot_rmse_tuning_per_dataset():
     return out
 
 # ─────────────────────────────────────────────────────────────
-# 8. GRAFIK RINGKASAN — 1 gambar, 3 dataset side-by-side, offset 5%
-#    (ini yang paling representatif untuk dimasukkan di bab 4)
+# 8. GRAFIK RINGKASAN — 3×3 grid: 3 offset × 3 dataset
 # ─────────────────────────────────────────────────────────────
-def plot_summary_offset5():
+def plot_summary_all_offsets():
     configs = [
-        ("dataset_ocv_soc_cc_cv_0.25c_rest_60m.csv",        0.0,   "Constant Charging 5A"),
-        ("dataset_dcc_0.22c_discharge_constant_2.5v.csv",    1.0,   "Constant Discharging 4.4A"),
-        ("dataset_dynamic_profiling_urban_load.csv",          0.953, "Discharging 15A, 5A, 10A"),
+        ("dataset_ocv_soc_cc_cv_0.25c_rest_60m.csv",       0.0,   "Charging 5A"),
+        ("dataset_dcc_0.22c_discharge_constant_2.5v.csv",   1.0,   "Discharging 4.4A"),
+        ("dataset_dynamic_profiling_urban_load.csv",         0.953, "Dynamic 15A/5A/10A"),
     ]
-    OFF = 0.05
+    offsets     = [0.0, 0.05, 0.10]
+    off_labels  = ["Offset 0%", "Offset 5%", "Offset 10%"]
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
     fig.patch.set_facecolor(BG_DARK)
-    fig.suptitle("Perbandingan Kurva SoC Riil vs Coulomb Counting vs EKF\n"
-                 "Skenario Offset Awal 5% (Simulasi Memory Loss Parsial)  |  Parameter Pengujian 3",
-                 color="white", fontsize=13, y=1.03, fontweight="bold")
+    fig.suptitle("Perbandingan SoC Riil vs Coulomb Counting vs EKF",
+                 color="white", fontsize=14, fontweight="bold", y=0.995)
 
-    for i, (fname, soc_init, label) in enumerate(configs):
-        t,true_,cc_,ekf_ = simulate(fname, soc_init, OFF)
-        t_h = t/3600
-        r_cc  = rmse(true_,cc_)
-        r_ekf = rmse(true_,ekf_)
-        ax = axes[i]
-        style_ax(ax)
-        ax.plot(t_h, true_*100, color=COL_REAL, lw=2.4, label="SoC Riil", zorder=5)
-        ax.plot(t_h, cc_  *100, color=COL_CC,   lw=1.8, ls="--",
-                label=f"CC  (RMSE={r_cc:.4f}%)", zorder=4)
-        ax.plot(t_h, ekf_ *100, color=COL_EKF,  lw=2.2,
-                label=f"EKF (RMSE={r_ekf:.4f}%)", zorder=6)
-        ax.set_title(label, color="white", fontsize=10, pad=6, fontweight="bold")
-        ax.set_xlabel("Waktu (jam)", color="white", fontsize=9)
-        ax.set_ylabel("SoC (%)", color="white", fontsize=9)
-        ax.set_ylim(-3, 108)
-        ax.legend(facecolor="#21262d", edgecolor=BORDER, labelcolor="white", fontsize=8.5)
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x,_: f"{x:.0f}%"))
+    for row, (off, olab) in enumerate(zip(offsets, off_labels)):
+        for col, (fname, soc_init, ds_label) in enumerate(configs):
+            t, true_, cc_, ekf_ = simulate(fname, soc_init, off)
+            t_h  = t / 3600
+            r_cc  = rmse(true_, cc_)
+            r_ekf = rmse(true_, ekf_)
 
-    plt.tight_layout()
-    out = os.path.join(os.path.dirname(__file__), "grafik_bab4_summary_offset5.png")
+            ax = axes[row][col]
+            style_ax(ax)
+
+            ax.plot(t_h, true_*100, color=COL_REAL, lw=2.2, label="SoC Riil", zorder=5)
+            ax.plot(t_h, cc_  *100, color=COL_CC,   lw=1.6, ls="--",
+                    label=f"CC   RMSE={r_cc:.4f}%",  zorder=4)
+            ax.plot(t_h, ekf_ *100, color=COL_EKF,  lw=2.0,
+                    label=f"EKF  RMSE={r_ekf:.4f}%", zorder=6)
+
+            ax.set_ylim(-3, 108)
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+            ax.legend(facecolor="#21262d", edgecolor=BORDER, labelcolor="white",
+                      fontsize=7.8, loc="upper right")
+            ax.set_xlabel("Waktu (jam)", color="white", fontsize=8)
+
+            # Kolom paling kiri: label offset sebagai ylabel
+            if col == 0:
+                ax.set_ylabel(f"{olab}\nSoC (%)", color="#94a3b8",
+                              fontsize=9, fontweight="bold")
+            else:
+                ax.set_ylabel("SoC (%)", color="white", fontsize=8)
+
+            # Baris paling atas: label nama dataset sebagai title
+            if row == 0:
+                ax.set_title(ds_label, color="white", fontsize=11,
+                             fontweight="bold", pad=7)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.993])
+    out = os.path.join(os.path.dirname(__file__), "grafik_bab4_summary.png")
     plt.savefig(out, dpi=150, bbox_inches="tight", facecolor=BG_DARK)
     plt.close()
-    print(f"[OK] grafik_bab4_summary_offset5.png")
+    print(f"[OK] grafik_bab4_summary.png")
     return out
 
 # ─────────────────────────────────────────────────────────────
@@ -336,7 +350,7 @@ if __name__ == "__main__":
     # Grafik batang RMSE tuning (jawaban pertanyaan dosen)
     plot_rmse_tuning_per_dataset()
 
-    # Grafik ringkasan offset 5% (kandidat utama Bab 4)
-    plot_summary_offset5()
+    # Grafik ringkasan 3×3 (semua offset)
+    plot_summary_all_offsets()
 
     print("\n[DONE] Semua grafik Bab 4 selesai.")
