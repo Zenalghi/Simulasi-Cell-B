@@ -1,0 +1,6 @@
+# JK BMS SOC Experiment — Dependencies
+# Install dengan:   pip install -r requirements.txt
+
+paho-mqtt>=2.0.0    # MQTT client untuk mqtt_logger.py
+matplotlib>=3.7.0   # Grafik untuk ekf_replayer.py
+numpy>=1.24.0       # Operasi numerik (opsional, untuk ekf_replayer.py)

@@ -129,7 +129,7 @@ Script analisis: `c:/homeesp/soc_experiment/ekf_replayer.py`
 
 **Tampilkan:** Grafik 4-panel dari `ekf_replayer.py` + ringkasan teks
 
-![Perbandingan SOC EKF vs JK BMS Vendor](../../../../homeesp/soc_experiment/data_logs/result_20260710_162454.png)
+![Perbandingan SOC EKF vs JK BMS Vendor](soc_experiment/data_logs/result_20260710_162454.png)
 
 **Ringkasan hasil eksperimen (`summary_20260710_162454.txt`):**
 ```

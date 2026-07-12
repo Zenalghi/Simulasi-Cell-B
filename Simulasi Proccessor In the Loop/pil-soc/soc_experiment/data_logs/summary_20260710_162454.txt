@@ -1,0 +1,15 @@
+=================================================================
+  RINGKASAN PERBANDINGAN AKURASI SOC
+  File  : bms_session_20260710_144650.csv
+  Durasi: 83.0 menit | Sampel: 4981
+  Referensi SOC awal (OCV): 14.56%  |  JK BMS klaim: 30.0%
+  Error vendor t=0: +15.44% (overestimate)
+-----------------------------------------------------------------
+  Metode                       RMSE (%SOC) MAE (%SOC)
+-----------------------------------------------------------------
+  SOC JK BMS (Vendor)              0.9817     0.8860
+  SOC EKF (Algoritma TA)           0.3684     0.3468
+-----------------------------------------------------------------
+  Perbaikan RMSE: +62.5%  |  Perbaikan MAE: +60.9%
+  EKF LEBIH AKURAT
+=================================================================
