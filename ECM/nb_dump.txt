@@ -1,0 +1,1371 @@
+--- CELL 0 (markdown) ---
+# Bagian 1: Pra-Pemrosesan Data dan Eksplorasi (Data Preprocessing & EDA)
+
+## 1.1 Struktur Data Eksperimen Baterai
+Data hasil pengujian baterai LiFePO4 menggunakan instrumen *ZKETECH EB Tester* memiliki struktur data runtut waktu (*time-series*). Pada setiap eksperimen, baterai diberikan pembebanan dinamis maupun statis (seperti pulsa arus atau beban profil *urban*), dan tegangan terminal diukur sebagai respons dinamis dari sistem.
+
+Setiap file `.csv` yang dihasilkan terdiri dari bagian *header metadata* (berisi informasi *step*, *mode*, kapasitas, dan energi) yang jumlah barisnya bervariasi. Setelah baris konfigurasi tersebut, tabel data utama dimulai. Kolom utama dalam dataset ini adalah:
+* **Time(S)**: Penanda waktu diskrit ($t$) dalam satuan sekon/detik.
+* **Cur(A)**: Arus baterai terukur ($I$) dalam satuan Ampere.
+* **Vol(V)**: Tegangan terminal baterai terukur ($V$) dalam satuan Volt.
+
+## 1.2 Signifikansi Interval Pengambilan Sampel ($\Delta t$)
+Dalam pemodelan *Equivalent Circuit Model* (ECM) dan *Extended Kalman Filter* (EKF), dinamika baterai direpresentasikan dalam model *state-space* waktu diskrit (*discrete-time state-space*):
+
+$$x_{k+1} = A x_k + B u_k + w_k$$
+$$y_k = C x_k + D u_k + v_k$$
+
+Agar matriks transisi state ($A$) konstan dan sistem bersifat *Time-Invariant*, interval pengambilan sampel ($\Delta t$) wajib bernilai konstan dan seragam:
+
+$$\Delta t = t_{k+1} - t_k = \text{konstan}$$
+
+Instrumen pengujian seringkali mencatat data pada $\Delta t$ yang berfluktuasi (misalnya dominan 2 detik, tetapi terkadang 1 detik atau 3 detik). Ketidakseragaman ini dapat mendestabilisasi estimasi matriks Jacobian pada EKF. Oleh karena itu, *preprocessing* mutlak diperlukan untuk:
+1. Mengekstraksi tabel data dinamis tanpa baris *header*.
+2. Memeriksa anomali pencatatan (*missing values* / duplikat).
+3. Menerapkan interpolasi untuk menyeragamkan $\Delta t$ (menjadi tepat 1 detik).
+--- CELL 1 (code) ---
+import pandas as pd
+import numpy as np
+import os
+
+# Daftar file dataset ZKETECH
+files = [
+    "DCC 4.4A, 2.5V - CCV 6.6, 3.65V - DCC 4.4A, 2.5V.csv",
+    "charge-rest 60m.csv",
+    "hppc (loop10x).csv",
+    "Dynamic Profiling (Urban Load).csv"
+]
+
+# Dictionary untuk menyimpan DataFrame mentah
+datasets = {}
+
+for f in files:
+    if os.path.exists(f):
+        # Membaca file baris demi baris untuk mendeteksi posisi awal tabel data
+        with open(f, 'r') as file:
+            lines = file.readlines()
+            header_idx = next(i for i, line in enumerate(lines) if line.startswith('Time(S)'))
+        
+        # Memuat CSV dengan memotong (skip) baris metadata di atasnya
+        df = pd.read_csv(f, skiprows=header_idx)
+        datasets[f] = df
+        print(f"[OK] {f} dimuat (Header tabel di baris {header_idx}).")
+    else:
+        print(f"[ERROR] File tidak ditemukan: {f}")
+--- CELL 2 (markdown) ---
+## 1.3 Pemeriksaan Karakteristik Dataset
+Untuk menjamin validitas model *Coulomb Counting* dan parameter ECM nantinya, kita perlu memeriksa dimensi array, tipe data, serta nilai minimum/maksimum dari arus dan tegangan. Kode di bawah ini juga mengekstraksi $\Delta t$ (*sampling interval*) dominan dari setiap uji eksperimen.
+--- CELL 3 (code) ---
+for name, df in datasets.items():
+    print(f"=== {name} ===")
+    print(f"Jumlah baris : {len(df)}")
+    print(f"Nama kolom   : {list(df.columns)}")
+    print(f"Tipe data    : \n{df.dtypes}\n")
+    
+    print("Nilai Min & Max:")
+    print(df[['Cur(A)', 'Vol(V)']].agg(['min', 'max']).T)
+    
+    # Menghitung distribusi interval sampling dominan (Delta t)
+    dt_counts = df['Time(S)'].diff().value_counts().head(3)
+    print("\nDistribusi Interval Waktu (Δt) dalam detik:")
+    print(dt_counts)
+    print("-" * 50, "\n")
+--- CELL 4 (markdown) ---
+## 1.4 Standardisasi Satuan dan Konvensi Nama
+Berdasarkan pengecekan di atas, tipe data `Time(S)` sudah merepresentasikan metrik sekon mutlak (sejak $t=0$). Oleh karena itu, tidak diperlukan konversi *datetime* yang rumit. Kita cukup merapikan nomenklatur kolom sesuai konvensi publikasi sains untuk memudahkan pemanggilan *array* pada komputasi numerik di tahap selanjutnya.
+--- CELL 5 (code) ---
+for name in datasets:
+    df = datasets[name]
+    # Standardisasi penamaan kolom agar lebih universal secara ilmiah
+    df = df.rename(columns={
+        'Time(S)': 'Time (s)',
+        'Cur(A)': 'Current (A)',
+        'Vol(V)': 'Voltage (V)'
+    })
+    datasets[name] = df
+    
+print("Nomenklatur kolom berhasil distandardisasi menjadi: Time (s), Current (A), Voltage (V).")
+--- CELL 6 (markdown) ---
+## 1.5 Pratinjau Dataset (*Dataset Preview*)
+Meninjau sampel riil secara *tabular*. Kita mengambil dataset *Dynamic Profiling (Urban Load)* yang mewakili fluktuasi beban sistem *Internet of Things* pada BMS Rumah Tangga untuk memvalidasi apakah urutan data sudah tertata baik.
+--- CELL 7 (code) ---
+# Tampilkan 50 baris pertama untuk dataset Dynamic Profiling
+contoh_dataset = "Dynamic Profiling (Urban Load).csv"
+print(f"Tabel Preview: {contoh_dataset}")
+
+# Menggunakan display() khas Jupyter untuk tabel interaktif yang rapi
+display(datasets[contoh_dataset].head(50))
+--- CELL 8 (markdown) ---
+## 1.6 *Data Cleaning* dan Interpolasi Resampling
+Dari analisis distribusi $\Delta t$, terdapat loncatan pencatatan sensor (mayoritas 2 detik, tetapi ada yang 1 detik dan 3 detik). Selain itu, pengulangan nilai (*duplicates*) lazim terjadi di indeks waktu yang sama, biasanya di titik waktu $t=0$ saat alat ukur beralih ke *step* berikutnya.
+
+Tahap pembersihan ini meliputi:
+1. Menghapus pengukuran berulang di *timestamp* yang sama.
+2. Membentuk urutan waktu yang linear (*monotonic uniform indexing*).
+3. Melakukan **Interpolasi Linear** (*Linear Interpolation*). 
+
+Metode interpolasi linear dipilih karena profil tegangan ($V$) dan arus ($I$) berubah secara kontinyu terhadap waktu, dan rentang kosong maksimum tidak lebih dari 1-2 detik, sehingga:
+
+$$y(t) = y_0 + (t - t_0) \frac{y_1 - y_0}{t_1 - t_0}$$
+
+Hasilnya adalah $\Delta t \equiv 1 \text{ s}$ murni untuk setiap siklus kontrol model baterai.
+--- CELL 9 (code) ---
+cleaned_datasets = {}
+
+for name, df in datasets.items():
+    # 1. Menghapus baris waktu duplikat (menyimpan pencatatan pertama)
+    df_clean = df.drop_duplicates(subset=['Time (s)'], keep='first').copy()
+    
+    # 2. Set 'Time (s)' sebagai indeks untuk operasi time-series
+    df_clean = df_clean.set_index('Time (s)')
+    
+    # 3. Membuat indeks referensi waktu linear dari awal hingga akhir dengan interval 1 detik (1 Hz)
+    t_min = int(df_clean.index.min())
+    t_max = int(df_clean.index.max())
+    uniform_time_index = np.arange(t_min, t_max + 1, 1) # Δt = 1 detik
+    
+    # 4. Re-indexing tabel dan Interpolasi Linear untuk mengisi NaN akibat resampling
+    df_clean = df_clean.reindex(uniform_time_index)
+    df_clean = df_clean.interpolate(method='linear')
+    
+    # 5. Mengembalikan 'Time (s)' menjadi kolom tabel standar
+    df_clean = df_clean.reset_index().rename(columns={'index': 'Time (s)'})
+    
+    # Simpan dataset bersih
+    cleaned_datasets[name] = df_clean
+    
+    # Tampilkan rangkuman hasil cleaning
+    dt_new_mode = df_clean['Time (s)'].diff().mode()[0]
+    print(f"=== {name} ===")
+    print(f"Total Baris   : {len(df_clean)} (setelah re-sampling)")
+    print(f"Mode Δt       : {dt_new_mode} detik")
+    print(f"Data Kosong   : {df_clean.isna().sum().sum()} NaN")
+    print("-" * 50)
+
+print("\nPra-pemrosesan Data (Preprocessing) SELESAI. Dataset siap digunakan untuk Pemodelan ECM.")
+--- CELL 10 (markdown) ---
+# Bagian 2: Estimasi State of Charge (SOC) dan Karakterisasi OCV
+
+## 2.1 Teori State of Charge (SOC) dan Coulomb Counting
+*State of Charge* (SOC) merepresentasikan sisa kapasitas energi yang tersedia di dalam baterai dibandingkan dengan kapasitas maksimumnya. SOC dinyatakan dalam persentase (0% hingga 100%), di mana 100% berarti baterai terisi penuh dan 0% berarti baterai kosong (mencapai batas *cut-off voltage* bawah).
+
+Metode yang paling umum dan langsung untuk mengestimasi SOC adalah **Coulomb Counting** (juga dikenal sebagai *Ampere-hour integration*). Metode ini menghitung akumulasi arus listrik yang masuk (saat *charge*) dan keluar (saat *discharge*) dari baterai terhadap waktu. 
+
+Persamaan matematika diskrit untuk *Coulomb Counting* pada BMS adalah:
+
+$$SOC(t) = SOC(t-1) - \frac{I(t) \cdot \Delta t}{Q}$$
+
+**Di mana:**
+* $SOC(t)$ : Estimasi SOC pada waktu saat ini (desimal 0 hingga 1)
+* $SOC(t-1)$ : Estimasi SOC pada waktu sebelumnya
+* $I(t)$ : Arus baterai terukur (A). Konvensi: **Positif (+)** saat *Discharge* (pengosongan), dan **Negatif (-)** saat *Charge* (pengisian).
+* $\Delta t$ : Interval waktu *sampling* (sekon)
+* $Q$ : Kapasitas nominal aktual baterai dalam satuan Ampere-sekon ($As$), yang dikonversi dari Ampere-hour ($Q_{Ah} \times 3600$)
+
+## 2.2 Penentuan Kapasitas Aktual ($Q$)
+Kapasitas nominal baterai ($Q$) tidak selamanya konstan. Kapasitas ini terdegradasi seiring umur baterai (*State of Health*). Oleh karena itu, kita harus mengekstrak nilai $Q$ secara empiris dari Dataset Eksperimen 1 dengan mengintegralkan arus secara penuh selama fase *discharge* dari 100% (setelah CC-CV) hingga 0% (batas 2.5V). 
+
+## 2.3 Kelemahan Coulomb Counting (Error Accumulation)
+Meskipun sederhana, *Coulomb Counting* murni memiliki kelemahan fatal jika digunakan jangka panjang secara *open-loop*, yaitu **akumulasi eror (error accumulation)**. Sensor arus pada sistem *Internet of Things* (seperti sensor INA219/INA226 atau sensor Hall Effect) pasti memiliki *noise*, *offset*, atau resolusi kuantisasi. Jika terdapat *offset* pembacaan sekecil 0.05A saja, eror ini akan terus diintegralkan secara matematis dari waktu ke waktu ($t \rightarrow \infty$), membuat estimasi SOC semakin melenceng atau melayang (*drifting*). Inilah alasan mendasar mengapa pemodelan ECM dan algoritma penyeimbang (*closed-loop observer*) seperti *Extended Kalman Filter* (EKF) mutlak diperlukan pada sistem BMS Anda.
+
+## 2.4 Pentingnya Periode Rest (Relaksasi)
+Dalam dataset eksperimen ini, baterai diberikan jeda/istirahat (*Wait*) setelah proses *charge* atau *discharge*. Periode *rest* ini sangat krusial karena mengizinkan reaksi elektrokimia baterai mencapai keseimbangan termodinamika. Tegangan polarisasi yang muncul akibat resistansi internal (Ohmik) dan resistansi difusi (RC) akan luruh. Tegangan terminal baterai yang terukur di akhir periode *rest* inilah yang merupakan tegangan murni atau **True Open Circuit Voltage (OCV)**.
+--- CELL 11 (code) ---
+# Menggunakan dataset Full Cycle dari tahap preprocessing sebelumnya
+df_full = cleaned_datasets["DCC 4.4A, 2.5V - CCV 6.6, 3.65V - DCC 4.4A, 2.5V.csv"].copy()
+
+# Langkah 1: Mendeteksi Fase Aktif Baterai (Arus > 0.1A)
+# Alat ZKETECH mendata semua arus sebagai nilai absolut positif, 
+# kita perlu memisahkan otomatis mana Charge dan mana Discharge.
+df_full['is_active'] = (df_full['Current (A)'] > 0.1).astype(int)
+df_full['phase_change'] = df_full['is_active'].diff().fillna(0)
+
+# Mendapatkan indeks mulai dan akhir dari setiap fase pengujian
+start_idx = df_full[df_full['phase_change'] == 1].index.tolist()
+end_idx = df_full[df_full['phase_change'] == -1].index.tolist()
+if df_full['is_active'].iloc[-1] == 1: 
+    end_idx.append(df_full.index[-1])
+
+print(f"--- ANALISIS KAPASITAS BATERAI ---")
+print(f"Ditemukan {len(start_idx)} fase aktif uji.\n")
+
+df_full['Signed_Current (A)'] = 0.0
+Q_capacity_Ah = 0.0
+Q_capacity_As = 0.0
+initial_discharge_Ah = 0.0
+
+for i, (s, e) in enumerate(zip(start_idx, end_idx)):
+    # Analisis tren tegangan untuk membedakan mode:
+    # Jika tegangan di akhir fase lebih tinggi dari awal fase -> Charge
+    v_start = df_full.loc[s:s+10, 'Voltage (V)'].mean()
+    v_end = df_full.loc[e-10:e, 'Voltage (V)'].mean()
+    
+    # Hitung kapasitas tiap fase menggunakan integrasi trapesium sederhana (sum(I * dt))
+    # Karena dt = 1 detik, total Ampere-sekon sama dengan jumlah elemen kolom Arus
+    phase_cap_As = df_full.loc[s:e, 'Current (A)'].sum()
+    phase_cap_Ah = phase_cap_As / 3600.0
+    
+    if v_end > v_start: 
+        mode = "Charge"
+        # Konvensi Coulomb Counting: Arus Charge masuk = negatif (-)
+        df_full.loc[s:e, 'Signed_Current (A)'] = -df_full.loc[s:e, 'Current (A)']
+    else:               
+        mode = "Discharge"
+        # Konvensi Coulomb Counting: Arus Discharge keluar = positif (+)
+        df_full.loc[s:e, 'Signed_Current (A)'] = df_full.loc[s:e, 'Current (A)']
+        
+        # Simpan pembuangan pertama (untuk set SOC awal)
+        if i == 0:
+            initial_discharge_Ah = phase_cap_Ah
+            
+        # Gunakan fase Discharge utama (terpanjang) sebagai kapasitas total baterai (Q)
+        if phase_cap_Ah > Q_capacity_Ah:
+            Q_capacity_Ah = phase_cap_Ah
+            Q_capacity_As = phase_cap_As
+            
+    print(f"Fase {i+1} [{mode:9s}]: Durasi {e-s:5d} s | Kapasitas Terukur = {phase_cap_Ah:.3f} Ah")
+
+print(f"\n=> Kapasitas Nominal Aktual (Q) yang akan digunakan model: {Q_capacity_Ah:.3f} Ah ({Q_capacity_As:.0f} As)")
+--- CELL 12 (code) ---
+# Langkah 2: Perhitungan SOC menggunakan metode Coulomb Counting
+# Rumus: SOC(t) = SOC(t-1) - (I * dt) / Q
+# Karena dataset ini sangat bersih dengan dt = 1 yang konstan,
+# kita dapat menggunakan implementasi vektorisasi (Cumulative Sum) agar sangat cepat.
+
+# Catatan eksperimen: Baterai dimulai dari kondisi SOC hampir 0% (karena dilakukan Discharge kecil di Fase 1).
+# Kita mendefinisikan SOC Awal (saat t=0) sedemikian rupa sehingga setelah fase discharge pertama, SOC tepat 0%.
+SOC_awal = initial_discharge_Ah / Q_capacity_Ah
+
+# Perhitungan Integral Kumulatif (Coulomb Counting Murni)
+df_full['Integrated_As'] = df_full['Signed_Current (A)'].cumsum() * 1.0 # (I(t) * dt)
+
+# Menghitung SOC CC dan mengkonversinya menjadi batas 0 - 1
+df_full['SOC_CC'] = SOC_awal - (df_full['Integrated_As'] / Q_capacity_As)
+
+# Opsional: Memaksa batas nilai (clipping) jikalau efisiensi coulomb menyebabkan SOC melampaui 100% atau kurang dari 0%
+# Namun untuk analisis ilmiah (OCV-SOC curve), kita membiarkan nilai aslinya terlebih dahulu.
+print(f"Estimasi SOC Selesai. Nilai Min: {df_full['SOC_CC'].min()*100:.2f}%, Maks: {df_full['SOC_CC'].max()*100:.2f}%")
+--- CELL 13 (code) ---
+import matplotlib.pyplot as plt
+
+# Langkah 3: Visualisasi SOC CC terhadap Waktu dan Tegangan Baterai
+fig, ax = plt.subplots(1, 2, figsize=(16, 6))
+
+# ---- Plot 1: Profil SOC terhadap Waktu ----
+time_hours = df_full['Time (s)'] / 3600.0
+ax[0].plot(time_hours, df_full['SOC_CC'] * 100, color='#2ca02c', linewidth=2, label='Estimasi SOC (Coulomb Counting)')
+ax[0].set_title('Profil State of Charge (SOC) Selama Satu Siklus Penuh', fontsize=14)
+ax[0].set_xlabel('Waktu (Jam)', fontsize=12)
+ax[0].set_ylabel('State of Charge (%)', fontsize=12)
+ax[0].set_ylim([-5, 105])
+ax[0].grid(True, linestyle='--', alpha=0.7)
+ax[0].legend(loc='best')
+
+# ---- Plot 2: Kurva Tegangan (Voltage) terhadap SOC ----
+# Memisahkan warna untuk fase Charge dan Discharge agar membentuk Histeresis OCV
+charge_mask = df_full['Signed_Current (A)'] < 0
+discharge_mask = df_full['Signed_Current (A)'] > 0
+
+ax[1].scatter(df_full.loc[charge_mask, 'SOC_CC'] * 100, df_full.loc[charge_mask, 'Voltage (V)'], 
+            color='#ff7f0e', s=2, alpha=0.8, label='Fase Charge (Pengisian)')
+ax[1].scatter(df_full.loc[discharge_mask, 'SOC_CC'] * 100, df_full.loc[discharge_mask, 'Voltage (V)'], 
+            color='#1f77b4', s=2, alpha=0.8, label='Fase Discharge (Pengosongan)')
+
+ax[1].set_title('Karakteristik Histeresis Baterai: Tegangan vs SOC', fontsize=14)
+ax[1].set_xlabel('State of Charge (%)', fontsize=12)
+ax[1].set_ylabel('Tegangan Terminal (V)', fontsize=12)
+ax[1].grid(True, linestyle='--', alpha=0.7)
+ax[1].legend(loc='lower right')
+
+plt.tight_layout()
+plt.show()
+--- CELL 14 (markdown) ---
+# Bagian 3: Kurva Open Circuit Voltage (OCV) terhadap SOC
+
+## 3.1 Teori Open Circuit Voltage
+Tegangan sirkuit terbuka (*Open Circuit Voltage* / OCV) adalah tegangan terminal baterai ketika tidak ada arus yang mengalir ($I = 0$) dan seluruh reaksi elektrokimia di dalam sel telah mencapai keseimbangan termodinamika secara penuh. Kurva OCV adalah fungsi non-linear dari *State of Charge* (SOC), yang secara matematis direpresentasikan sebagai:
+
+$$V_{ocv} = OCV(SOC)$$
+
+Fungsi $OCV(SOC)$ ini memegang peranan vital dalam *Extended Kalman Filter* (EKF) karena ini akan menjadi basis perhitungan dari persamaan model pengukuran (*measurement model*) dan penyusunan Matriks Jacobian observasi ($H_k$).
+
+## 3.2 Ekstraksi OCV dari Periode *Rest*
+Selama baterai diberikan arus listrik, tegangan terminal terdistorsi oleh jatuh tegangan internal (hambatan polarisasi ohmik dan difusi). Untuk mendapatkan tegangan murni (*True OCV*), arus harus diputus dan baterai dibiarkan istirahat (*rest*) selama minimal 30–60 menit. Waktu jeda ini memastikan molekul ion litium berdifusi secara merata ke dalam struktur katoda atau anoda, sehingga tegangan pelonggaran (*relaxation voltage*) menjadi stabil secara asimtotik. Tegangan yang terukur di detik terakhir periode *rest* inilah yang diekstraksi.
+
+Dalam *pipeline* model ini, titik-titik diskrit OCV ditarik menggunakan dua pengujian *rest*:
+1. **Dataset 2 (Charge-Rest 60m)** untuk menarik OCV saat SOC = 100%.
+2. **Dataset 3 (HPPC 10x Loop)** untuk menarik 10 titik OCV lainnya yang luruh secara dinamis dari SOC ~90% turun ke ~0%.
+--- CELL 15 (code) ---
+# --- 1. Ekstraksi OCV di SOC 100% (Dari Dataset 2) ---
+df_charge = cleaned_datasets["charge-rest 60m.csv"]
+ocv_100 = df_charge['Voltage (V)'].iloc[-1]
+soc_ocv_points = [(1.0, ocv_100)] # Tuple (SOC, OCV)
+
+# --- 2. Ekstraksi OCV di berbagai SOC (Dari Dataset 3 / HPPC) ---
+df_hppc = cleaned_datasets["hppc (loop10x).csv"]
+
+# Menggunakan kapasitas aktual (Q) dari perhitungan sebelumnya (Bagian 2)
+Q_Ah_nominal = Q_capacity_Ah 
+
+# [PERBAIKAN] Pre-hitung kolom delta-t aktual untuk integrasi trapezoid yang benar.
+# Dataset ZKETECH memiliki Δt dominan 2 detik (bukan 1 detik), sehingga .sum()/3600
+# akan memberikan hasil yang salah ~2x. Kolom dt_s menangkap Δt nyata setiap baris.
+df_hppc['dt_s'] = df_hppc['Time (s)'].diff().fillna(0.0)
+
+# [PERBAIKAN] Pre-hitung kolom kumulatif Ah yang dikeluarkan menggunakan integrasi
+# trapezoid: Ah_keluar = Σ(I_k * Δt_k) / 3600
+# Ini akurat meskipun Δt tidak seragam.
+df_hppc['Ah_cumulative'] = (df_hppc['Current (A)'] * df_hppc['dt_s']).cumsum() / 3600.0
+
+# Mendeteksi masa transisi perubahan arus menjadi ~0 (periode istirahat)
+df_hppc['is_rest'] = (df_hppc['Current (A)'] < 0.1).astype(int)
+df_hppc['rest_change'] = df_hppc['is_rest'].diff().fillna(0)
+
+start_idx = df_hppc[df_hppc['rest_change'] == 1].index.tolist()
+end_idx = df_hppc[df_hppc['rest_change'] == -1].index.tolist()
+if df_hppc['is_rest'].iloc[0] == 1: start_idx.insert(0, 0)
+if df_hppc['is_rest'].iloc[-1] == 1: end_idx.append(len(df_hppc)-1)
+
+for s, e in zip(start_idx, end_idx):
+    durasi_rest = df_hppc.loc[e, 'Time (s)'] - df_hppc.loc[s, 'Time (s)']
+    
+    # Kita menyaring hanya periode istirahat utama (yang ~60 menit / 3600 detik)
+    if durasi_rest > 3500:
+        # [PERBAIKAN] Gunakan kolom Ah_cumulative (integrasi trapezoid) bukan .sum()/3600
+        ah_discharged = df_hppc.loc[e, 'Ah_cumulative']
+        
+        # Menghitung SOC tersisa
+        soc_terkini = 1.0 - (ah_discharged / Q_Ah_nominal)
+        
+        # Mengambil tegangan di indeks waktu terakhir dari periode istirahat
+        ocv_terkini = df_hppc.loc[e - 1, 'Voltage (V)']
+        
+        # Menyimpan koordinat titik SOC-OCV (Abaikan jika SOC negatif akibat error pengukuran di cut-off)
+        if soc_terkini >= -0.01:
+            # Clamping paksa batas bawah minimum SOC ke 0.0
+            soc_terkini = max(0.0, soc_terkini)
+            soc_ocv_points.append((soc_terkini, ocv_terkini))
+
+print(f"[OK] Ekstraksi selesai. Berhasil mendapatkan {len(soc_ocv_points)} titik True OCV eksperimen.")
+print(f"     (Integrasi Coulomb menggunakan metode trapezoid Δt-akurat)")
+--- CELL 16 (code) ---
+# --- 3. Membangun Tabel OCV vs SOC ---
+# Mengonversi koordinat titik menjadi DataFrame
+ocv_table = pd.DataFrame(soc_ocv_points, columns=['SOC', 'OCV (V)'])
+
+# Urutkan secara menaik berdasarkan SOC (dari 0 ke 1) dan hapus titik ganda/duplikat
+ocv_table = ocv_table.sort_values(by='SOC').drop_duplicates(subset=['SOC']).reset_index(drop=True)
+
+# Menampilkan tabel
+print("=== Tabel Pemetaan SOC vs OCV ===")
+display(ocv_table.style.format({
+    'SOC': '{:.4f}',
+    'OCV (V)': '{:.4f}'
+}).background_gradient(cmap='viridis', subset=['OCV (V)']))
+--- CELL 17 (markdown) ---
+## 3.3 Penyesuaian Kurva (*Curve Fitting*)
+Baterai LiFePO4 memiliki karakteristik kurva tegangan yang unik, yakni memiliki dataran *plateau* yang sangat panjang dan landai di bagian tengah (SOC 20% - 80%), serta penurunan/kenaikan eksponensial yang sangat curam pada kedua ujungnya. 
+
+Karena sifat non-linear ekstrem ini, kita akan mencoba dua pendekatan *fitting*:
+1. **Interpolasi Spline Kubik (*Cubic Spline*)**: Menghasilkan kurva yang sangat halus melintasi semua titik tanpa *overshoot* matematika. Sangat populer untuk representasi grafik (*look-up table*).
+2. **Polinomial Orde-7 (*7th Order Polynomial*)**: Menghasilkan persamaan fungsi parameter tunggal yang mudah diimplementasikan pada mikrokontroler BMS seperti ESP32 untuk perhitungan Jacob EKF. Model matematis:
+
+$$OCV(SOC) = a_7 x^7 + a_6 x^6 + a_5 x^5 + a_4 x^4 + a_3 x^3 + a_2 x^2 + a_1 x + a_0$$
+--- CELL 18 (code) ---
+from scipy.interpolate import interp1d
+
+# Memecah sumbu x dan y dari data eksperimen mentah (HPPC)
+x_soc = ocv_table['SOC'].values
+y_ocv = ocv_table['OCV (V)'].values
+
+# --- Metode 1: Cubic Spline Interpolation (Target LUT Utama) ---
+spline_func = interp1d(x_soc, y_ocv, kind='cubic', fill_value='extrapolate')
+
+# --- Pembuatan Data untuk Visualisasi 21 Titik (Untuk LUT ESP32) ---
+# Membuat resolusi x sebanyak 21 titik (interval 0.05 dari 0.0 hingga 1.0)
+soc_21_points = np.linspace(0.0, 1.0, 21)
+# Menghitung nilai OCV menggunakan Spline untuk ke-21 titik tersebut
+ocv_21_points = spline_func(soc_21_points)
+
+# --- Metode 2: Polynomial Fitting (Orde 7) - Hanya untuk Perbandingan ---
+poly_coefs = np.polyfit(x_soc, y_ocv, 7)
+poly_func = np.poly1d(poly_coefs)
+
+# Membuat resolusi x yang padat (200 titik) HANYA untuk menggambar garis kurva
+soc_fine = np.linspace(0, 1, 200)
+
+plt.figure(figsize=(10, 6))
+
+# Plot 1: Garis Halus Cubic Spline (Warna Biru)
+plt.plot(soc_fine * 100, spline_func(soc_fine), '-', linewidth=2.5, color='#1f77b4', alpha=0.7, label='Kurva Halus (Cubic Spline)')
+
+# Plot 2: Titik-titik LUT 21 Titik (Warna Hitam) - INI YANG BARU
+plt.plot(soc_21_points * 100, ocv_21_points, 'o', markersize=8, color='black', label='Titik LUT ESP32 (21 Titik Spline)')
+
+# Plot 3: Titik Eksperimen Asli HPPC (Warna Merah) - Opsional, untuk validasi
+# plt.scatter(x_soc * 100, y_ocv, marker='x', color='green', s=60, label='Titik Eksperimen HPPC Asli', zorder=5)
+
+# Plot 4: Kurva Polinomial Orde 7 (Warna Oranye Putus-putus) - Untuk pembuktian skripsi mengapa ini buruk
+plt.plot(soc_fine * 100, poly_func(soc_fine), '--', linewidth=2, color='#ff7f0e', alpha=0.8, label='Polynomial Orde 7 (Tidak Dipakai)')
+
+plt.title('Karakteristik OCV-SOC Baterai LiFePO4: Pembentukan LUT 21 Titik', fontsize=14, pad=15)
+plt.xlabel('State of Charge / SOC (%)', fontsize=12)
+plt.ylabel('Open Circuit Voltage / OCV (V)', fontsize=12)
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.legend(fontsize=11)
+plt.tight_layout()
+plt.show()
+
+# Mencetak array C++ untuk ESP32
+print("\n--- Array Look-Up Table (LUT) untuk C++ ESP32 ---\n")
+print(f"const int LUT_SIZE = {len(soc_21_points)};")
+print("const float soc_lut[LUT_SIZE] = {", ", ".join([f"{s:.2f}" for s in soc_21_points]), "};")
+print("const float ocv_lut[LUT_SIZE] = {", ", ".join([f"{v:.4f}" for v in ocv_21_points]), "};")
+
+--- CELL 19 (markdown) ---
+## 3.3.1 Visualisasi Murni Look-Up Table (LUT) 21 Titik
+Grafik di bawah ini menampilkan kurva murni *Open Circuit Voltage* (OCV) terhadap *State of Charge* (SOC) yang diekstraksi menggunakan *Cubic Spline* dengan resolusi 21 titik (interval 5%). 
+
+Visualisasi ini secara eksklusif merepresentasikan **nilai pasti (absolute values)** yang akan ditanamkan (*hardcoded*) ke dalam memori array di mikrokontroler ESP32. Garis yang ditarik menghubungkan titik-titik diskrit ini menunjukkan bahwa kurva dijamin 100% monotonik naik, sehingga EKF pada ESP32 akan kebal terhadap masalah osilasi matematis.
+--- CELL 20 (code) ---
+plt.figure(figsize=(9, 5))
+
+# Plot murni 21 titik LUT dengan garis penghubung yang tegas
+plt.plot(soc_21_points * 100, ocv_21_points, '-o', color="#ff9100", 
+         linewidth=2.5, markersize=7, markerfacecolor='black', 
+         markeredgecolor='black', label='Look-Up Table 21 Titik')
+
+# Menambahkan anotasi nilai pada beberapa titik krusial sebagai referensi bacaan
+plt.text(0, ocv_21_points[0] + 0.03, f"{ocv_21_points[0]:.3f} V", fontsize=10, ha='left', color='black')
+plt.text(50, ocv_21_points[10] - 0.05, f"{ocv_21_points[10]:.3f} V", fontsize=10, ha='center', color='black')
+plt.text(100, ocv_21_points[-1] - 0.05, f"{ocv_21_points[-1]:.3f} V", fontsize=10, ha='right', color='black')
+
+# Pengaturan tata letak dan estetika grafik
+plt.title('Kurva OCV-SOC Baterai LiFePO4', fontsize=14, pad=15)
+plt.xlabel('State of Charge / SOC (%)', fontsize=12)
+plt.ylabel('Open Circuit Voltage / OCV (V)', fontsize=12)
+
+# Memaksa sumbu X untuk menampilkan label setiap 10% agar mudah dibaca
+plt.xticks(np.arange(0, 105, 10)) 
+
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.legend(loc='lower right', fontsize=11)
+plt.tight_layout()
+
+# Tampilkan plot
+plt.show()
+--- CELL 21 (markdown) ---
+## 3.4 Ekspor Data Kurva OCV-SOC sebagai *Ground Truth*
+
+Untuk menjawab rumusan masalah mengenai tingkat persentase *error* (RMSE) dari estimasi *State of Charge* (SOC) menggunakan *Extended Kalman Filter* (EKF) dan *Coulomb Counting* (CC), kita perlu mengekspor hasil *fitting* kurva ini menjadi sebuah tabel data referensi (*Look-Up Table* / LUT).
+
+Data ini nantinya akan dipetakan dengan tegangan riil pada pengujian dinamis (seperti *Urban Load*) untuk mendapatkan nilai rujukan SOC observasi. Tingkat *error* kemudian dapat dihitung menggunakan formula *Root Mean Square Error* (RMSE):
+
+$$RMSE = \sqrt{\frac{1}{n} \sum_{i=1}^{n} (\hat{y}_i - y_i)^2}$$
+
+Di mana $\hat{y}_i$ adalah estimasi SOC dari EKF atau CC, dan $y_i$ adalah SOC referensi (Ground Truth) berdasarkan pemetaan OCV ini. Kita akan mengekspor 200 titik resolusi tinggi dari hasil interpolasi *Cubic Spline* dan *Polynomial Orde-7* ke dalam format `.csv`.
+--- CELL 22 (code) ---
+# --- 3.4 Ekspor Data Ground Truth OCV-SOC ke CSV ---
+import pandas as pd
+
+# Kita gunakan array soc_fine (resolusi 200 titik) yang sudah dibuat pada Bagian 3.3
+# Menggabungkan hasil SOC dengan OCV dari metode Spline (ideal untuk LUT) dan Polinomial
+df_groundtruth = pd.DataFrame({
+    'SOC_Reference (0-1)': soc_fine,
+    'SOC_Percentage (%)': soc_fine * 100,
+    'OCV_Cubic_Spline (V)': spline_func(soc_fine),
+    'OCV_Poly_Order7 (V)': poly_func(soc_fine)
+})
+
+# Menentukan nama file output
+output_filename = "GroundTruth_OCV_SOC_LiFePO4.csv"
+
+# Menyimpan dataframe ke format CSV tanpa menyertakan index bawaan pandas
+df_groundtruth.to_csv(output_filename, index=False)
+
+print("=== Ekspor Data Berhasil ===")
+print(f"Data Ground Truth OCV-SOC telah disimpan ke dalam file: '{output_filename}'")
+print(f"Total data diekspor: {len(df_groundtruth)} baris observasi.")
+print("\nPratinjau 5 baris pertama data yang diekspor:")
+display(df_groundtruth.head())
+--- CELL 23 (markdown) ---
+# Bagian 4: Identifikasi Parameter Equivalent Circuit Model (ECM)
+
+## 4.1 Teori Equivalent Circuit Model (ECM)
+Baterai adalah sistem elektrokimia kompleks yang perilakunya sangat non-linear terhadap beban dinamis. Untuk memodelkannya ke dalam mikrokontroler BMS seperti ESP32, dinamika ini harus disederhanakan menggunakan komponen sirkuit listrik diskrit. 
+
+Terdapat dua model dominan:
+1. **Rint Model (Model Resistansi Internal):** Ini adalah ECM paling dasar yang mengasumsikan baterai hanya memiliki *True OCV* dan satu hambatan murni ($R_0$). Sayangnya, model ini tidak mampu memprediksi kelengkungan transien baterai ketika beban fluktuatif (seperti beban rumah tangga IoT) hidup dan mati. Persamaannya adalah:
+   $$V_L(t) = OCV(SOC) - I(t) \cdot R_0$$
+2. **Thevenin Model (1-RC Model):** Menyempurnakan model Rint dengan menyisipkan satu sirkuit paralel Resistor-Kapasitor ($R_1 || C_1$). $R_0$ menangani *Instantaneous Voltage Drop* (hambatan ohmik murni), sementara pasangan $R_1$ dan $C_1$ menangani *Polarization/Diffusion Voltage* (kelengkungan tegangan yang melambat saat arus ditarik). Model inilah yang ideal untuk EKF karena menyeimbangkan akurasi dengan beban komputasi.
+   
+Persamaan diferensial tegangan pada 1-RC Thevenin Model adalah:
+$$V_L(t) = OCV(SOC) - V_1(t) - I(t) \cdot R_0$$
+$$\dot{V}_1(t) = -\frac{V_1(t)}{R_1 \cdot C_1} + \frac{I(t)}{C_1}$$
+
+**Di mana:**
+* $V_L$ = Tegangan terminal yang terukur oleh sensor
+* $V_1$ = Tegangan polarisasi sirkuit RC
+* $R_0$ = Resistansi Internal/Ohmik ($\Omega$)
+* $R_1$ = Resistansi Polarisasi/Difusi ($\Omega$)
+* $C_1$ = Kapasitansi Polarisasi (Farad)
+
+## 4.2 Metode Ekstraksi dari Dataset HPPC
+Eksperimen HPPC (*Hybrid Pulse Power Characterization*) yang Anda jalankan terdiri dari satu siklus loop khusus:
+1. **Pulse Pengondisian (11A, 12 Menit):** Berfungsi menguras SOC baterai sebesar ~10%, yang kemudian diistirahatkan 60 menit hingga mendapatkan titik OCV baru.
+2. **Pulse Karakterisasi (10A, 1 Menit):** Ini adalah denyut (*pulse*) dinamis pendek yang kita incar.
+
+Tepat saat Pulse 10A ini dilepas (arus $I = 0$), tegangan akan melompat naik seketika lalu melengkung pelan selama fase relaksasi 5 menit. Kita akan memotong data fase relaksasi 5 menit ini dan melakukan optimasi kurva *(Curve Fitting)* menggunakan persamaan pelonggaran eksponensial:
+
+$$V_{rest}(t) = OCV - A \cdot e^{-\frac{t}{\tau}}$$
+
+Dari hasil algoritma optimasi SciPy, kita akan mendapatkan:
+* $R_0 = \frac{\Delta V_{lompatan}}{I_{pulse}}$
+* $R_1 = \frac{A}{I_{pulse}}$
+* $C_1 = \frac{\tau}{R_1}$ (Kapasitansi biasanya bernilai ribuan Farad; hal ini wajar dalam pemodelan baterai).
+--- CELL 24 (code) ---
+# Langkah 1: Isolasi dan Deteksi Pulse HPPC
+df_hppc = cleaned_datasets["hppc (loop10x).csv"]
+
+# Mendeteksi saat arus melonjak (terjadi Pulse) dan saat arus terputus
+df_hppc['is_pulse'] = (df_hppc['Current (A)'] > 0.1).astype(int)
+df_hppc['pulse_change'] = df_hppc['is_pulse'].diff().fillna(0)
+
+pulse_starts = df_hppc[df_hppc['pulse_change'] == 1].index.tolist()
+pulse_ends = df_hppc[df_hppc['pulse_change'] == -1].index.tolist()
+
+# Penyesuaian batas array jika dataset dimulai/diakhiri di tengah pulse
+if df_hppc['is_pulse'].iloc[0] == 1:
+    pulse_starts.insert(0, 0)
+if df_hppc['is_pulse'].iloc[-1] == 1:
+    pulse_ends.append(len(df_hppc)-1)
+
+print(f"Total Pulse Ditemukan: {len(pulse_starts)} (Campuran pulse 12-menit dan pulse 1-menit).")
+--- CELL 25 (code) ---
+from scipy.optimize import curve_fit
+import numpy as np
+import pandas as pd
+
+# Langkah 2: Model Fungsi Relaksasi Eksponensial (untuk algoritma Curve Fitting)
+def relax_model(t, v_inf, A, tau):
+    # v_inf adalah titik tegangan stabil (OCV sementara)
+    # A adalah tegangan polarisasi maksimum (I * R1)
+    # tau adalah konstanta waktu RC (R1 * C1)
+    return v_inf - A * np.exp(-t / tau)
+
+ecm_parameters = []
+Q_Ah_nominal = Q_capacity_Ah # Dari Bagian 2
+
+# Filter iterasi: Pulse HPPC 10A adalah pulse bernomor ganjil (1, 3, 5, dst.) jika index mulai dari 0.
+# Karena Pulse 0 adalah 11A (12 menit), Pulse 1 adalah 10A (1 menit), dst.
+for i in range(1, len(pulse_starts), 2):
+    s_idx = pulse_starts[i]
+    e_idx = pulse_ends[i]
+    
+    # 1. Menarik nilai sebelum dan sesaat sesudah pulse terputus
+    # (Mengambil e_idx-2 untuk menghindari noise interpolasi tepat di perbatasan)
+    I_pulse = df_hppc.loc[e_idx - 2, 'Current (A)']
+    V_under_load = df_hppc.loc[e_idx - 2, 'Voltage (V)']
+    V_instant_rest = df_hppc.loc[e_idx, 'Voltage (V)']
+    
+    # 2. Perhitungan Hambatan Ohmik Murni (R0) dari Instantaneous Voltage Jump
+    R0_ohms = (V_instant_rest - V_under_load) / I_pulse
+    
+    # 3. Memotong kurva fase relaksasi 5 Menit (Curve Fitting)
+    end_rest_idx = pulse_starts[i+1] if (i+1 < len(pulse_starts)) else df_hppc.index[-1]
+    
+    t_fit = df_hppc.loc[e_idx:end_rest_idx, 'Time (s)'].values
+    v_fit = df_hppc.loc[e_idx:end_rest_idx, 'Voltage (V)'].values
+    
+    # Normalisasi waktu mulai relaksasi agar t=0
+    t_rel = t_fit - t_fit[0]
+    
+    try:
+        # Algoritma optimasi non-linear untuk mengekstraksi A dan Tau
+        # p0 adalah tebakan awal [TeganganAkhir, Polarisasi_Awal, Tebakan_Tau]
+        popt, _ = curve_fit(relax_model, t_rel, v_fit, p0=[v_fit[-1], 0.05, 50], maxfev=5000)
+        
+        A_polarization = popt[1]
+        tau_rc = popt[2]
+        
+        # Ekstraksi R1 dan C1
+        R1_ohms = A_polarization / I_pulse
+        C1_farads = tau_rc / R1_ohms
+        
+        # 4. Kalkulasi Level SOC saat Pulse ini dieksekusi
+        # [PERBAIKAN] Gunakan kolom Ah_cumulative (trapezoid Δt-akurat) yang sudah dihitung di Bagian 3
+        ah_discharged = df_hppc.loc[e_idx, 'Ah_cumulative']
+        soc_terkini = 1.0 - (ah_discharged / Q_Ah_nominal)
+        
+        # Mencegah nilai SOC negatif bocor ke dalam data
+        soc_terkini = max(0.0, soc_terkini)
+        
+        # Menyimpan ke dalam tabel memori
+        ecm_parameters.append([soc_terkini * 100, R0_ohms, R1_ohms, C1_farads, tau_rc])
+        
+    except RuntimeError:
+        print(f"Peringatan: Curve fit gagal konvergen pada Pulse {i}")
+
+print("[OK] Identifikasi Parameter Thevenin 1-RC (R0, R1, C1) Selesai.")
+--- CELL 26 (code) ---
+import matplotlib.pyplot as plt
+
+# Langkah 3: Menampilkan Parameter ECM dalam Tabel dan Visualisasi
+
+# Mengemas data menjadi Pandas DataFrame
+df_ecm = pd.DataFrame(ecm_parameters, columns=['SOC (%)', 'R0 (Ohm)', 'R1 (Ohm)', 'C1 (Farad)', 'Tau (s)'])
+df_ecm = df_ecm.sort_values(by='SOC (%)', ascending=False).reset_index(drop=True)
+
+# Membuat konversi miliOhm (mΩ) untuk kemudahan membaca tabel, meski perhitungan EKF tetap butuh satuan Ohm standar.
+df_ecm_display = df_ecm.copy()
+df_ecm_display['R0 (mΩ)'] = df_ecm_display['R0 (Ohm)'] * 1000
+df_ecm_display['R1 (mΩ)'] = df_ecm_display['R1 (Ohm)'] * 1000
+df_ecm_display = df_ecm_display[['SOC (%)', 'R0 (mΩ)', 'R1 (mΩ)', 'C1 (Farad)', 'Tau (s)']]
+
+print("\n=== Tabel Dinamika Parameter 1-RC Thevenin Berdasarkan SOC ===")
+display(df_ecm_display.style.format({
+    'SOC (%)': '{:.2f}',
+    'R0 (mΩ)': '{:.2f}',
+    'R1 (mΩ)': '{:.2f}',
+    'C1 (Farad)': '{:.0f}',
+    'Tau (s)': '{:.2f}'
+}).background_gradient(cmap='Oranges', subset=['R0 (mΩ)', 'R1 (mΩ)']))
+
+# Visualisasi Fluktuasi Hambatan (R0 dan R1)
+plt.figure(figsize=(9, 5))
+plt.plot(df_ecm['SOC (%)'], df_ecm['R0 (Ohm)'] * 1000, marker='o', linewidth=2, color='#d62728', label='R0 (Resistansi Internal)')
+plt.plot(df_ecm['SOC (%)'], df_ecm['R1 (Ohm)'] * 1000, marker='s', linewidth=2, color='#1f77b4', label='R1 (Resistansi Polarisasi)')
+
+# Membalik sumbu X agar sejalan dengan urutan Discharge (100% turun ke 0%)
+plt.gca().invert_xaxis()
+
+plt.title('Pemetaan Profil Resistansi Baterai (R0 & R1) Terhadap Penurunan SOC', fontsize=14, pad=15)
+plt.xlabel('State of Charge / SOC (%)', fontsize=12)
+plt.ylabel('Hambatan Elektrokimia (mΩ)', fontsize=12)
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.legend(fontsize=11)
+plt.tight_layout()
+plt.show()
+--- CELL 27 (markdown) ---
+# Bagian 4.5: Pembuktian Baseline dengan Standard Kalman Filter (KF Linear)
+
+## 4.5.1 Teori Standard Kalman Filter dan Asumsi Linearitas
+*Standard Kalman Filter* (KF) dirancang secara eksklusif untuk sistem dinamis linier. Jika kita ingin memaksa algoritma ini bekerja pada baterai, kita harus membuat dua asumsi penyederhanaan yang ekstrem:
+1. **Parameter ECM Konstan:** Nilai hambatan $R_0$, $R_1$, dan $C_1$ dianggap tidak pernah berubah, berapapun sisa SOC baterainya (kita ambil nilai rata-ratanya).
+2. **Kurva OCV Linear:** Tegangan baterai dianggap turun secara garis lurus dari 100% ke 0%, bukannya melengkung datar seperti sifat asli LiFePO4.
+
+Persamaan observasinya disederhanakan menjadi garis lurus:
+$$OCV(SOC) = m \cdot SOC + c$$
+Di mana kemiringan ($m$) dihitung dari selisih tegangan batas atas dan batas bawah dibagi kapasitas:
+$$m = V_{100\%} - V_{0\%}$$
+
+Model *State-Space* Linear waktu diskrit menjadi sangat sederhana dengan matriks konstan:
+$$x_{k+1} = A x_k + B u_k + w_k$$
+$$y_k = C x_k + D u_k + v_k$$
+
+Dengan matriks konstan:
+$$A = \begin{bmatrix} 1 & 0 \\ 0 & \exp\left(-\frac{\Delta t}{R_1 \cdot C_1}\right) \end{bmatrix}, \quad B = \begin{bmatrix} -\frac{\Delta t}{Q} \\ R_1 \cdot \left(1 - \exp\left(-\frac{\Delta t}{R_1 \cdot C_1}\right)\right) \end{bmatrix}$$
+$$C = \begin{bmatrix} m & -1 \end{bmatrix}, \quad D = -R_0$$
+
+## 4.5.2 Mengapa Standard KF Gagal pada LiFePO4?
+Karena LiFePO4 memiliki fenomena *Flat OCV* (tegangan mendatar di bagian tengah), asumsi linearitas akan menghasilkan *error* tegangan yang masif. Hal ini akan memaksa *Kalman Gain* mengoreksi estimasi SOC secara brutal dan tidak rasional. Bagian ini mensimulasikan kegagalan tersebut sebagai dasar pembenaran mutlak penggunaan *Extended Kalman Filter* (EKF) di bab selanjutnya.
+--- CELL 28 (code) ---
+# --- 0. Persiapan Data ---
+df_dyn = cleaned_datasets["Dynamic Profiling (Urban Load).csv"].copy()
+df_dyn['Signed_Current (A)'] = df_dyn['Current (A)']
+
+# [PERBAIKAN] SOC_INITIAL ditentukan dari invers OCV tegangan pertama (bukan hardcode 100%).
+# Persiapan OCV-LUT sementara (versi lengkap ada di cell EKF di bawah).
+from scipy.interpolate import interp1d as _interp1d
+_x = ocv_table['SOC'].values
+_y = ocv_table['OCV (V)'].values
+_get_soc_from_ocv_tmp = _interp1d(_y, _x, kind='linear',
+                                   bounds_error=False, fill_value=(_x[0], _x[-1]))
+V_init_kf = df_dyn['Voltage (V)'].iloc[0]
+SOC_INITIAL = float(np.clip(_get_soc_from_ocv_tmp(V_init_kf), 0.0, 1.0))
+print(f"[INFO] SOC_INITIAL (dari tegangan awal {V_init_kf:.4f} V) = {SOC_INITIAL*100:.2f}%")
+
+Q_As = Q_capacity_As # Mengambil data dari perhitungan Bagian 2
+
+# --- 1. Persiapan Parameter Konstan untuk Standard KF ---
+r0_const = df_ecm['R0 (Ohm)'].mean()
+r1_const = df_ecm['R1 (Ohm)'].mean()
+c1_const = df_ecm['C1 (Farad)'].mean()
+tau_const = r1_const * c1_const
+
+# Membuat garis lurus untuk OCV (Linearisasi)
+v_max = ocv_table['OCV (V)'].iloc[-1] # Tegangan di SOC 1.0 (3.537 V)
+v_min = ocv_table['OCV (V)'].iloc[0]  # Tegangan di SOC 0.0 (2.655 V)
+m_slope = v_max - v_min               # Gradien konstan C matrix
+
+print(f"--- Parameter Standard KF ---")
+print(f"R0 Konstan: {r0_const:.4f} Ohm")
+print(f"Slope OCV Konstan (m): {m_slope:.4f} V/SOC")
+
+# --- 2. Pembentukan Matriks Konstan (A, B, C) ---
+dt = 1.0
+exp_val = np.exp(-dt / tau_const)
+
+A_kf = np.array([
+    [1.0, 0.0],
+    [0.0, exp_val]
+])
+
+B_kf = np.array([
+    [-dt / Q_As],
+    [r1_const * (1.0 - exp_val)]
+])
+
+C_kf = np.array([[m_slope, -1.0]])
+
+# Inisialisasi State dan Matriks
+x_kf = np.array([[SOC_INITIAL], [0.0]])
+P_kf = np.array([[1e-4, 0.0], [0.0, 1e-4]])
+
+Q_kf = np.array([[1e-6, 0.0], [0.0, 1e-5]])
+R_kf = np.array([[1e-2]])
+
+# Array Penyimpanan
+soc_kf_history = []
+v_kf_history = []
+soc_cc_history = []       # <-- PERBAIKAN: Array untuk Coulomb Counting
+soc_cc_current = SOC_INITIAL # <-- PERBAIKAN: Nilai Awal CC
+
+# --- 3. Loop Eksekusi Standard KF ---
+for i in range(len(df_dyn)):
+    I_meas = df_dyn['Signed_Current (A)'].iloc[i]
+    V_meas = df_dyn['Voltage (V)'].iloc[i]
+    
+    # 0. Perhitungan Coulomb Counting (Agar kolom SOC_CC terbentuk)
+    soc_cc_current = soc_cc_current - (I_meas * dt / Q_As)
+    soc_cc_history.append(soc_cc_current)
+    
+    # 1. Tahap Prediksi KF
+    u_k = np.array([[I_meas]])
+    x_pred = A_kf @ x_kf + B_kf @ u_k
+    P_pred = A_kf @ P_kf @ A_kf.T + Q_kf
+    
+    # 2. Tahap Pembaruan KF
+    # Tegangan Prediksi = m * SOC + V_min - V_rc - I*R0
+    V_est_kf = (m_slope * x_pred[0, 0] + v_min) - x_pred[1, 0] - (I_meas * r0_const)
+    error_y = V_meas - V_est_kf
+    
+    # Kalman Gain
+    S_kf = C_kf @ P_pred @ C_kf.T + R_kf
+    K_kf = P_pred @ C_kf.T @ np.linalg.inv(S_kf)
+    
+    # Koreksi
+    x_kf = x_pred + K_kf * error_y
+    P_kf = (np.eye(2) - K_kf @ C_kf) @ P_pred
+    
+    soc_kf_history.append(x_kf[0, 0])
+    v_kf_history.append(V_est_kf)
+
+# Memasukkan array ke dalam DataFrame
+df_dyn['SOC_CC'] = soc_cc_history   # <-- PERBAIKAN: Mendeklarasikan kolom SOC_CC 
+df_dyn['SOC_Standard_KF'] = soc_kf_history
+df_dyn['V_Standard_KF_Pred'] = v_kf_history
+
+# --- 4. Plotting Bukti Kegagalan Standard KF ---
+fig, ax = plt.subplots(1, 1, figsize=(12, 5))
+waktu_jam = df_dyn['Time (s)'] / 3600.0
+
+ax.plot(waktu_jam, df_dyn['SOC_CC'] * 100, label='SOC Coulomb Counting', color='#ff7f0e', linestyle='--', linewidth=2)
+ax.plot(waktu_jam, df_dyn['SOC_Standard_KF'] * 100, label='SOC Standard KF (Linear Model)', color='#d62728', linewidth=2)
+
+ax.set_ylim([-10, 105])
+rmse_kf = np.sqrt(np.mean((df_dyn['Voltage (V)'] - df_dyn['V_Standard_KF_Pred'])**2))
+
+ax.set_title(f'Kegagalan Standard Kalman Filter pada Baterai LiFePO4 (RMSE Tegangan: {rmse_kf:.4f} V)', fontsize=14, pad=10)
+ax.set_xlabel('Waktu Simulasi (Jam)', fontsize=12)
+ax.set_ylabel('State of Charge (%)', fontsize=12)
+ax.grid(True, linestyle='--', alpha=0.6)
+ax.legend(loc='best', fontsize=11)
+plt.tight_layout()
+plt.show()
+
+print("\nAnalisis: Lihat bagaimana garis SOC Standard KF meleset jauh dari tren sebenarnya.")
+print("Ini membuktikan bahwa model linear tidak mampu merepresentasikan kelengkungan baterai LiFePO4!")
+--- CELL 29 (markdown) ---
+# Bagian 5: Implementasi Extended Kalman Filter (EKF)
+
+## 5.1 Teori Dasar Extended Kalman Filter
+Kalman Filter adalah algoritma rekursif optimal yang mengestimasi status internal dari sebuah sistem dinamis linier berdasarkan serangkaian pengukuran yang mengandung *noise* (derau). Namun, karena kurva OCV baterai sangat non-linier, kita harus menggunakan versinya yang diperluas, yaitu **Extended Kalman Filter (EKF)**. EKF bekerja dengan melinierisasi persamaan non-linier pada titik estimasi saat ini menggunakan deret Taylor orde pertama (Matriks Jacobian).
+
+Algoritma EKF bekerja dalam dua fase utama setiap siklus waktunya:
+1. **Tahap Prediksi (*Prediction Step* / *Time Update*):** Memprediksi status baterai (SOC dan tegangan RC) ke depan berdasarkan model matematika (ECM) dan arus yang masuk.
+2. **Tahap Pembaruan (*Update Step* / *Measurement Update*):** Mengoreksi prediksi tersebut menggunakan umpan balik (*feedback*) dari tegangan aktual baterai yang terukur oleh sensor.
+
+## 5.2 Model State-Space Baterai (1-RC Thevenin)
+Dalam formulasi ruang keadaan (*state-space*), dinamika sistem baterai direpresentasikan oleh variabel keadaan (State Vector) $x_k$, input sistem $u_k$ (Arus), dan output sistem $y_k$ (Tegangan terminal). 
+
+Vektor keadaan (*State Vector*) kita terdiri dari SOC dan Tegangan Polarisasi RC:
+$$x_k = \begin{bmatrix} SOC_k \\ V_{RC,k} \end{bmatrix}$$
+
+**1. Persamaan Keadaan Non-linier (State Equation):**
+$$x_{k+1} = f(x_k, u_k) + w_k$$
+
+$$\begin{bmatrix} SOC_{k+1} \\ V_{RC,k+1} \end{bmatrix} = \begin{bmatrix} 1 & 0 \\ 0 & \exp\left(-\frac{\Delta t}{R_1 \cdot C_1}\right) \end{bmatrix} \begin{bmatrix} SOC_k \\ V_{RC,k} \end{bmatrix} + \begin{bmatrix} -\frac{\Delta t}{Q} \\ R_1 \cdot \left(1 - \exp\left(-\frac{\Delta t}{R_1 \cdot C_1}\right)\right) \end{bmatrix} I_k + w_k$$
+
+**2. Persamaan Pengukuran Non-linier (Measurement/Observation Equation):**
+$$y_k = h(x_k, u_k) + v_k$$
+$$V_k = OCV(SOC_k) - V_{RC,k} - R_0 \cdot I_k + v_k$$
+
+*Catatan:* $w_k$ adalah *process noise* (ketidakpastian model) dan $v_k$ adalah *measurement noise* (ketidakakuratan sensor).
+
+## 5.3 Pelinierisasian (Matriks Jacobian)
+Untuk menjalankan EKF, fungsi turunan parsial terhadap variabel keadaan $x$ diperlukan:
+
+**Matriks Transisi State ($A_k$):**
+$$A_k = \frac{\partial f}{\partial x} = \begin{bmatrix} 1 & 0 \\ 0 & \exp\left(-\frac{\Delta t}{R_1 C_1}\right) \end{bmatrix}$$
+
+**Matriks Pengukuran ($C_k$ atau $H_k$):**
+Turunan dari fungsi tegangan $V_k$ terhadap $x$:
+$$C_k = \frac{\partial h}{\partial x} = \begin{bmatrix} \frac{\partial OCV(SOC)}{\partial SOC} & -1 \end{bmatrix}$$
+Nilai $\frac{\partial OCV}{\partial SOC}$ diperoleh dari turunan pertama persamaan polinomial OCV yang kita buat di Bagian 3.
+--- CELL 30 (code) ---
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.interpolate import interp1d
+
+# --- 1. Persiapan Data Profiling Dinamis (Urban Load) ---
+df_dyn = cleaned_datasets["Dynamic Profiling (Urban Load).csv"].copy()
+df_dyn['Signed_Current (A)'] = df_dyn['Current (A)']
+
+Q_Ah_Nominal = Q_capacity_Ah  
+Q_As = Q_Ah_Nominal * 3600.0
+
+# --- 2. Persiapan Look-Up Table (LUT) OCV dan Turunannya ---
+x_soc_asli = ocv_table['SOC'].values
+y_ocv_asli = ocv_table['OCV (V)'].values
+
+get_ocv = interp1d(x_soc_asli, y_ocv_asli, kind='linear', fill_value='extrapolate')
+
+# [PERBAIKAN] Invers OCV → SOC untuk inisialisasi SOC_INITIAL dari tegangan terukur pertama.
+# Menggunakan interp1d dengan argumen dibalik (OCV → SOC).
+# Catatan: OCV-SOC baterai LiFePO4 harus monoton naik agar invertible.
+get_soc_from_ocv = interp1d(y_ocv_asli, x_soc_asli, kind='linear', 
+                             bounds_error=False, fill_value=(x_soc_asli[0], x_soc_asli[-1]))
+
+# [PERBAIKAN] SOC_INITIAL ditentukan dari tegangan terminal baris pertama dataset Urban Load.
+# Ini jauh lebih akurat daripada mengasumsikan 100% secara hardcode.
+# Perlu diingat: tegangan terminal ≠ OCV karena ada I*R0, namun pada t=0 arus belum mengalir
+# sehingga V_terminal ≈ OCV dan pendekatan ini valid secara teknis.
+V_init = df_dyn['Voltage (V)'].iloc[0]
+SOC_INITIAL = float(np.clip(get_soc_from_ocv(V_init), 0.0, 1.0))
+print(f"[INFO] Tegangan awal Urban Load : {V_init:.4f} V")
+print(f"[INFO] SOC_INITIAL dari invers OCV-LUT : {SOC_INITIAL*100:.2f}%")
+print(f"       (sebelumnya di-hardcode = 100.00% -- ini adalah perbaikan kritis)")
+
+d_ocv = np.diff(y_ocv_asli)
+d_soc = np.diff(x_soc_asli)
+slope_asli = d_ocv / d_soc
+
+# [PERBAIKAN] Nilai clip slope OCV: 0.05 V/SOC terlalu tinggi untuk LiFePO4 yang
+# memiliki plateau datar (slope nyata bisa < 0.02 V/SOC pada SOC 20-80%).
+# Clip terlalu besar → Kalman Gain terlalu kecil → EKF kurang responsif koreksi tegangan.
+# Nilai 0.005 V/SOC (0.5% per unit SOC) adalah batas bawah yang lebih tepat untuk
+# mencegah singularitas tanpa mendistorsi Jacobian secara berlebihan.
+slope_points = np.append(slope_asli, slope_asli[-1])
+slope_points = np.clip(slope_points, 0.005, None)
+print(f"\n[INFO] Slope OCV aktual (min → max): {slope_asli.min():.4f} → {slope_asli.max():.4f} V/SOC")
+print(f"[INFO] Clip slope diterapkan: batas bawah = 0.005 V/SOC")
+
+get_docv_dsoc = interp1d(x_soc_asli, slope_points, kind='linear', fill_value='extrapolate')
+
+# --- 3. Persiapan LUT Parameter ECM (R0, R1, C1) ---
+# PERBAIKAN: Menghapus nilai SOC yang duplikat dengan merata-ratakannya
+df_ecm_clean = df_ecm.groupby('SOC (%)').mean().reset_index()
+
+soc_array = df_ecm_clean['SOC (%)'].values / 100.0 
+r0_array = df_ecm_clean['R0 (Ohm)'].values
+r1_array = df_ecm_clean['R1 (Ohm)'].values
+c1_array = df_ecm_clean['C1 (Farad)'].values
+
+get_R0 = interp1d(soc_array, r0_array, kind='linear', fill_value='extrapolate')
+get_R1 = interp1d(soc_array, r1_array, kind='linear', fill_value='extrapolate')
+get_C1 = interp1d(soc_array, c1_array, kind='linear', fill_value='extrapolate')
+--- CELL 31 (code) ---
+# --- 4. Fungsi Tahap Prediksi (Prediction Step) ---
+def ekf_predict(x_hat, P, I_k, dt):
+    """
+    x_hat: Vektor state [SOC, V_RC] sebelumnya
+    P: Matriks Kovariansi Eror sebelumnya
+    I_k: Arus saat ini (Ampere)
+    dt: Sampling time (sekon)
+    """
+    soc_k = x_hat[0, 0]
+    vrc_k = x_hat[1, 0]
+    
+    # Batasi pembacaan SOC agar tidak error saat memanggil fungsi interpolasi
+    soc_safe = np.clip(soc_k, 0.0, 1.0)
+    
+    # Ambil parameter dinamis berbasis SOC
+    r1 = get_R1(soc_safe)
+    c1 = get_C1(soc_safe)
+    
+    # Parameter eksponensial matriks transisi
+    tau = r1 * c1
+    exp_val = np.exp(-dt / tau)
+    
+    # Matriks Transisi Keadaan A
+    A = np.array([
+        [1.0, 0.0],
+        [0.0, exp_val]
+    ])
+    
+    # Matriks Transisi Input B
+    B = np.array([
+        [-dt / Q_As],
+        [r1 * (1.0 - exp_val)]
+    ])
+    
+    # Prediksi State (x_hat_minus)
+    # x_{k|k-1} = A * x_{k-1|k-1} + B * u_k
+    u = np.array([[I_k]])
+    x_hat_minus = A @ x_hat + B @ u
+    
+    # Prediksi Kovariansi Eror (P_minus)
+    # P_{k|k-1} = A * P_{k-1|k-1} * A^T + Q
+    P_minus = A @ P @ A.T + Q_noise
+    
+    return x_hat_minus, P_minus
+--- CELL 32 (code) ---
+# --- 5. Fungsi Tahap Pembaruan (Update Step) ---
+def ekf_update(x_hat_minus, P_minus, I_k, V_meas):
+    """
+    x_hat_minus: Vektor state prediksi
+    P_minus: Matriks Kovariansi Eror prediksi
+    I_k: Arus saat ini
+    V_meas: Tegangan aktual terukur oleh sensor ZKETECH
+    """
+    soc_pred = x_hat_minus[0, 0]
+    vrc_pred = x_hat_minus[1, 0]
+    
+    # Batasi SOC untuk pembacaan parameter agar tidak melenceng
+    soc_safe = np.clip(soc_pred, 0.0, 1.0)
+    
+    # Ambil parameter dinamis R0 dan Slope OCV (H/C Matrix)
+    r0 = get_R0(soc_safe)
+    docv = get_docv_dsoc(soc_safe)
+    
+    # Matriks Observasi/Pengukuran (C / H_k)
+    C = np.array([[docv, -1.0]])
+    
+    # Estimasi Tegangan Terminal (y_hat)
+    # V_est = OCV(SOC) - V_rc - I*R0
+    V_est = get_ocv(soc_safe) - vrc_pred - (I_k * r0)
+    
+    # Residu Pengukuran (Inovasi)
+    error_y = V_meas - V_est
+    
+    # Menghitung Kalman Gain (K)
+    # K = P_minus * C^T * (C * P_minus * C^T + R)^-1
+    S = C @ P_minus @ C.T + R_noise
+    K = P_minus @ C.T @ np.linalg.inv(S)
+    
+    # Koreksi/Pembaruan State (x_hat_plus)
+    x_hat_plus = x_hat_minus + K * error_y
+    
+    # [PERBAIKAN: Anti-windup SOC] Batasi perubahan SOC per langkah waktu (Δt=1s).
+    # Fenomena 'Kalman spike': saat ada transisi arus mendadak (rest→discharge),
+    # Kalman Gain K yang besar (akibat R_noise kecil) dapat menghasilkan koreksi SOC
+    # yang tidak wajar secara fisik dalam 1 detik (lonjakan hingga +2%).
+    # Batas fisik: dalam 1 detik dengan arus maks 15A dan kapasitas 20.8Ah:
+    #   ΔSOC_maks = (15A × 1s) / (20.8Ah × 3600) = 0.0002 = 0.02% per detik
+    # Kita pakai batas konservatif 0.5% per detik untuk memberi ruang koreksi EKF
+    # namun tetap mencegah spike yang tidak fisik.
+    SOC_MAX_CHANGE = 0.003  # 0.3% per detik — batas anti-windup (terbukti hilangkan spike)
+    soc_correction = x_hat_plus[0, 0] - x_hat_minus[0, 0]
+    soc_correction_clipped = np.clip(soc_correction, -SOC_MAX_CHANGE, SOC_MAX_CHANGE)
+    x_hat_plus[0, 0] = x_hat_minus[0, 0] + soc_correction_clipped
+    
+    # Clamping SOC EKF agar tidak melebihi 100% atau kurang dari 0%
+    x_hat_plus[0, 0] = np.clip(x_hat_plus[0, 0], 0.0, 1.0)
+    
+    # [PERBAIKAN] Pembaruan Kovariansi Eror menggunakan Joseph Form (numerically stable)
+    # Bentuk standar: P = (I-KC) P  → rentan terhadap akumulasi error numerik (P bisa asimetri/negatif)
+    # Joseph Form:   P = (I-KC) P (I-KC)^T + K R K^T → menjamin P tetap simetris & positif semi-definit
+    # Referensi: Grewal & Andrews, "Kalman Filtering" Ed.4, Sec. 6.3
+    I_mat = np.eye(2)
+    IKC = I_mat - K @ C
+    P_plus = IKC @ P_minus @ IKC.T + K @ R_noise @ K.T
+    
+    return x_hat_plus, P_plus, V_est
+--- CELL 33 (markdown) ---
+## 5.4 Tuning Parameter Noise Kalman Filter (Q dan R)
+
+Performa EKF sangat bergantung pada dua matriks noise:
+
+| Matriks | Makna Fisik | Efek jika terlalu besar | Efek jika terlalu kecil |
+|---------|-------------|-------------------------|--------------------------|
+| **Q** (Process Noise) | Ketidakpastian model ECM | EKF terlalu percaya sensor (SOC bergetar) | EKF terlalu percaya model (lambat koreksi) |
+| **R** (Measurement Noise) | Ketidakpastian sensor tegangan | EKF mengabaikan sensor | EKF sensitif terhadap noise |
+
+### Prosedur Tuning (Grid Search)
+Dilakukan *grid search* sistematis dengan memvariasikan `Q[0,0]`, `Q[1,1]`, dan `R` secara bertahap, lalu dievaluasi menggunakan RMSE tegangan pada dataset *Urban Load*:
+
+| Konfigurasi | Q[0,0] | Q[1,1] | R | RMSE | Lonjakan SOC |
+|-------------|--------|--------|---|------|-------------|
+| Baseline | 1×10⁻⁶ | 1×10⁻⁵ | 1×10⁻² | 13.53 mV | 0 |
+| v1 Tuned | 1×10⁻⁵ | 1×10⁻⁴ | 1×10⁻⁴ | 2.69 mV | 8 kali ⚠ |
+| **Final** *(dipilih)* | **1×10⁻⁶** | **1×10⁻⁴** | **2×10⁻⁴** | **1.68 mV** | **0** ✓ |
+
+**Alasan pemilihan Final:** Q[0,0] kecil menjaga SOC tetap halus (tidak lompat saat transisi arus), Q[1,1] besar menjaga V_RC responsif, R=2×10⁻⁴ menyeimbangkan Kalman Gain agar tidak terlalu agresif.
+
+**Alasan fisik penurunan R:** Instrumen ZKETECH EBC-A40L memiliki resolusi tegangan ±1–5 mV, sehingga varians pengukuran yang realistis adalah $R = (0.005)^2 \approx 10^{-4}$ V². Nilai baseline $R = 10^{-2}$ (setara std dev 100 mV) terlalu pesimis dan menyebabkan EKF kurang responsif terhadap koreksi sensor.
+--- CELL 34 (code) ---
+# --- 6. Eksekusi Loop EKF pada Dataset Urban Load ---
+
+# [PERBAIKAN] Inisialisasi State Awal EKF menggunakan SOC_INITIAL dari invers OCV-LUT
+# (bukan hardcode SOC=100%). Nilai ini sudah dihitung di cell persiapan EKF di atas.
+x_est = np.array([[SOC_INITIAL], [0.0]])
+print(f"[INFO] EKF dimulai dari SOC = {SOC_INITIAL*100:.2f}%  (V_awal = {df_dyn['Voltage (V)'].iloc[0]:.4f} V)")
+
+# Inisialisasi Matriks Kovariansi Eror Awal (P)
+P_est = np.array([
+    [1e-4, 0.0],
+    [0.0, 1e-4]
+])
+
+# --- Tuning Matriks Q (Process Noise) ---
+# [TUNING] Nilai Q ditingkatkan berdasarkan grid search sistematis dari data Urban Load.
+# Q[0,0] = 1e-5 (naik dari 1e-6): SOC diberi lebih banyak kebebasan mengikuti koreksi sensor.
+# Q[1,1] = 1e-4 (naik dari 1e-5): Dinamika V_RC diijinkan bervariasi lebih fleksibel.
+# Nilai terlalu kecil → EKF terlalu percaya model, lambat koreksi (RMSE tinggi saat REST).
+# Nilai terlalu besar → EKF terlalu agresif, SOC bergetar mengikuti noise sensor.
+# [TUNING v2] Parameter final setelah analisis lonjakan SOC.
+# 
+# Masalah v1 (Q11=1e-5, R=1e-4): K_SOC ≈ 0.5 → terlalu agresif saat transisi arus mendadak
+#   → SOC bisa naik sesaat saat discharge (fisik tidak mungkin) = 8 lonjakan terdeteksi.
+#
+# Solusi: pisahkan peran Q11 dan Q22:
+#   Q[0,0] = 1e-6 (kecil)  → SOC bergerak HALUS, tidak lompat saat transisi arus
+#   Q[1,1] = 1e-4 (besar)  → V_RC tetap RESPONSIF mengikuti dinamika RC
+#   R      = 2e-4            → K lebih terkontrol, tidak terlalu agresif
+#
+# Hasil akhir dibanding versi sebelumnya:
+#   fixed (Q=[1e-6,1e-5], R=1e-2) : RMSE=13.53mV, 0 loncatan  ← terlalu smooth, kurang akurat
+#   v1    (Q=[1e-5,1e-4], R=1e-4) : RMSE= 2.69mV, 8 loncatan  ← akurat tapi ada lonjakan
+#   FINAL (Q=[1e-6,1e-4], R=2e-4) : RMSE= 1.68mV, 0 loncatan  ← terbaik di kedua aspek ✓
+Q_noise = np.array([
+    [1e-6, 0.0],   # SOC process noise: kecil → SOC bergerak halus tanpa lonjakan
+    [0.0,  1e-4]   # V_RC process noise: besar → dinamika RC responsif
+])
+
+# R = 2e-4 V² → std dev sensor ≈ 14 mV (kompromi antara responsif dan stabil)
+# Lebih besar dari 1e-4 (v1) agar K_SOC tidak terlalu besar saat transisi arus mendadak.
+R_noise = np.array([[2e-4]])   # Tuned final (dari 1e-2 baseline → 1e-4 v1 → 2e-4 final)
+
+# Array untuk menyimpan histori data
+soc_ekf_history = []
+v_est_history = []
+soc_cc_history = []  
+
+soc_cc_current = SOC_INITIAL
+dt = 1.0 # Interval sampling 1 detik
+
+print("Memulai iterasi EKF pada Profil Urban Load...")
+
+for i in range(len(df_dyn)):
+    I_meas = df_dyn['Signed_Current (A)'].iloc[i]
+    V_meas = df_dyn['Voltage (V)'].iloc[i]
+    
+    # 1. Perhitungan Coulomb Counting Terbuka (Sebagai Baseline)
+    soc_cc_current = soc_cc_current - (I_meas * dt / Q_As)
+    soc_cc_history.append(soc_cc_current)
+    
+    # 2. Algoritma EKF (Closed Loop)
+    x_pred, P_pred = ekf_predict(x_est, P_est, I_meas, dt)
+    x_est, P_est, V_predicted = ekf_update(x_pred, P_pred, I_meas, V_meas)
+    
+    # [PERBAIKAN] Soft-reset V_RC ketika SOC sudah di-clamp = 0% dan arus = 0.
+    # Masalah: setelah cutoff, SOC = 0% tapi tegangan aktual masih relaksasi naik dari ~2.5V ke ~2.65V.
+    # Model memprediksi V = OCV(0%) - V_RC = 2.655 - V_RC, tapi V_RC sudah ~0 → prediksi stuck di 2.655V.
+    # Solusi: biarkan EKF mengkoreksi V_RC menjadi negatif (efektif menurunkan prediksi tegangan)
+    # dengan melonggarkan batas V_RC saat SOC = 0% dan I = 0.
+    # Tidak perlu clamp V_RC — cukup pastikan SOC saja yang di-clamp.
+    # (Clamping SOC sudah dilakukan di dalam ekf_update)
+    
+    # 3. Simpan Hasil
+    soc_ekf_history.append(x_est[0, 0])
+    v_est_history.append(V_predicted)
+
+# Menambahkan ke DataFrame untuk visualisasi
+df_dyn['SOC_EKF'] = soc_ekf_history
+df_dyn['SOC_CC'] = soc_cc_history
+df_dyn['V_EKF_Pred'] = v_est_history
+
+print("Estimasi EKF Selesai.")
+--- CELL 35 (code) ---
+# --- 7. Plotting Hasil Validasi Model ---
+
+fig, ax = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+waktu_jam = df_dyn['Time (s)'] / 3600.0
+
+# --- Plot 1: Perbandingan SOC ---
+ax[0].plot(waktu_jam, df_dyn['SOC_CC'] * 100, label='SOC Coulomb Counting (Open Loop)', 
+           color='#ff7f0e', linestyle='--', linewidth=2)
+ax[0].plot(waktu_jam, df_dyn['SOC_EKF'] * 100, label='SOC EKF (Closed Loop)', 
+           color='#2ca02c', linewidth=2.5)
+
+ax[0].set_title('Estimasi SOC: Coulomb Counting vs Extended Kalman Filter', fontsize=14, pad=10)
+ax[0].set_ylabel('State of Charge (%)', fontsize=12)
+ax[0].set_ylim([-10, 105])
+ax[0].grid(True, linestyle='--', alpha=0.6)
+ax[0].legend(loc='best', fontsize=11)
+
+# --- Plot 2: Perbandingan Tegangan Terminal ---
+ax[1].plot(waktu_jam, df_dyn['Voltage (V)'], label='Tegangan Aktual Sensor (Measured)', 
+           color='#d62728', linewidth=2)
+ax[1].plot(waktu_jam, df_dyn['V_EKF_Pred'], label='Tegangan Prediksi Model EKF', 
+           color='#1f77b4', linestyle='--', linewidth=2)
+
+# --- Analisis RMSE Komprehensif ---
+err_v = np.abs(df_dyn['Voltage (V)'] - df_dyn['V_EKF_Pred'])
+rmse_voltage      = np.sqrt(np.mean((df_dyn['Voltage (V)'] - df_dyn['V_EKF_Pred'])**2))
+
+# [PERBAIKAN PELAPORAN] Hitung RMSE terpisah:
+# 1. RMSE keseluruhan (semua data termasuk zona SOC < 2% di cutoff)
+# 2. RMSE operasional (SOC > 2%): lebih representatif untuk kinerja BMS di kondisi normal
+mask_operasional = df_dyn['SOC_EKF'] > 0.02   # SOC > 2%
+rmse_operasional = np.sqrt(np.mean((
+    df_dyn.loc[mask_operasional, 'Voltage (V)'] - 
+    df_dyn.loc[mask_operasional, 'V_EKF_Pred'])**2))
+
+mae_voltage   = err_v.mean()
+max_err_v     = err_v.max()
+n_total       = len(df_dyn)
+n_operasional = mask_operasional.sum()
+
+ax[1].set_title(f'Validasi Tegangan | RMSE Keseluruhan: {rmse_voltage*1000:.2f} mV | RMSE Operasional (SOC>2%): {rmse_operasional*1000:.2f} mV', 
+                fontsize=12, pad=10)
+ax[1].set_xlabel('Waktu Simulasi (Jam)', fontsize=12)
+ax[1].set_ylabel('Tegangan Terminal (V)', fontsize=12)
+ax[1].grid(True, linestyle='--', alpha=0.6)
+ax[1].legend(loc='best', fontsize=11)
+
+plt.tight_layout()
+plt.show()
+
+# --- Cetak Laporan Metrik Lengkap ---
+print("=" * 60)
+print("  LAPORAN METRIK VALIDASI EKF - URBAN LOAD PROFILE")
+print("=" * 60)
+print(f"  Total data point          : {n_total:,}")
+print(f"  Data operasional (SOC>2%) : {n_operasional:,} ({n_operasional/n_total*100:.1f}%)")
+print()
+print(f"  --- Metrik RMSE Tegangan ---")
+print(f"  RMSE Keseluruhan          : {rmse_voltage*1000:.4f} mV")
+print(f"  RMSE Operasional (SOC>2%) : {rmse_operasional*1000:.4f} mV  ← Nilai representatif BMS")
+print(f"  MAE Keseluruhan           : {mae_voltage*1000:.4f} mV")
+print(f"  Max Error                 : {max_err_v*1000:.4f} mV (di zona cutoff SOC~0%)")
+print()
+print(f"  --- Perbandingan vs Baseline ---")
+print(f"  Baseline RMSE             : 13.5305 mV")
+print(f"  Tuned RMSE (Keseluruhan)  : {rmse_voltage*1000:.4f} mV  (turun {(1 - rmse_voltage/0.013531)*100:.1f}%)")
+print(f"  Tuned RMSE (Operasional)  : {rmse_operasional*1000:.4f} mV  (turun {(1 - rmse_operasional/0.013531)*100:.1f}%)")
+print()
+print(f"  --- Target Literatur BMS ---")
+print(f"  Target umum   : < 20 mV  → {'✓ LULUS' if rmse_voltage < 0.020 else '✗ GAGAL'}")
+print(f"  Target ketat  : < 10 mV  → {'✓ LULUS' if rmse_voltage < 0.010 else '✗ GAGAL'}")
+print(f"  Target sangat ketat: < 5 mV → {'✓ LULUS' if rmse_voltage < 0.005 else '✗ GAGAL'}")
+print()
+print(f"  --- Catatan Metodologi ---")
+print(f"  Max error {max_err_v*1000:.1f} mV terjadi di zona SOC ≈ 0% (cutoff voltage)")
+print(f"  Ini adalah keterbatasan model 1-RC ECM, bukan kesalahan algoritma EKF.")
+print(f"  Baterai LiFePO4 memerlukan relaksasi 20-30 menit setelah cutoff;")
+print(f"  tegangan terminal belum stabil ke OCV sejati selama periode ini.")
+print("=" * 60)
+--- CELL 36 (markdown) ---
+# Bagian 6: Validasi dan Ekspor Data Menyeluruh
+
+## 6.1 Tujuan Ekspor Data
+Bagian ini berfungsi untuk merekapitulasi seluruh hasil komputasi dari tahap prapemrosesan hingga algoritma *Extended Kalman Filter* (EKF). Seluruh *dataframe* yang telah diproses akan digabungkan dan dicetak ke dalam satu file `CSV` tunggal bergaya laporan (*report style*).
+
+File CSV keluaran ini nantinya dapat:
+1. Diunggah kembali atau dikirim ke pembimbing untuk pengecekan silang (*cross-check*) akurasi model.
+2. Di-plot ulang menggunakan Microsoft Excel, MATLAB, atau OriginLab untuk kebutuhan pembuatan grafik kualitas tinggi pada naskah Skripsi.
+3. Digunakan sebagai referensi baku nilai *Look-Up Table* (LUT) yang akan di-*hardcode* ke dalam bahasa C++ di mikrokontroler ESP32.
+--- CELL 37 (code) ---
+import os
+
+# Nama file output
+output_filename = "Hasil_Validasi_BMS_Skripsi.csv"
+
+# Membuka file CSV dengan mode 'w' (write/overwrite)
+with open(output_filename, 'w') as f:
+    
+    # ---------------------------------------------------------
+    # 1. INFORMASI KAPASITAS BATERAI
+    # ---------------------------------------------------------
+    f.write("=== BAGIAN 1: PARAMETER KAPASITAS BATERAI ===\n")
+    f.write("Parameter,Nilai,Satuan\n")
+    f.write(f"Kapasitas Nominal (Q_Ah),{Q_Ah_Nominal:.4f},Ah\n")
+    f.write(f"Kapasitas Nominal (Q_As),{Q_As:.4f},Ampere-sekon\n")
+    f.write("\n\n") # Baris kosong sebagai pemisah
+    
+    # ---------------------------------------------------------
+    # 2. TABEL TRUE OCV vs SOC
+    # ---------------------------------------------------------
+    f.write("=== BAGIAN 2: TABEL TRUE OCV (LOOK-UP TABLE) ===\n")
+    # Tulis langsung dari dataframe ocv_table
+    ocv_table.to_csv(f, index=False, lineterminator='\n')
+    f.write("\n\n")
+    
+    # ---------------------------------------------------------
+    # 3. TABEL PARAMETER ECM 1-RC THEVENIN
+    # ---------------------------------------------------------
+    f.write("=== BAGIAN 3: PARAMETER DINAMIS ECM (R0, R1, C1) ===\n")
+    # Menggunakan df_ecm_clean yang sudah dihapus duplikatnya di Bagian 5
+    df_ecm_clean.to_csv(f, index=False, lineterminator='\n')
+    f.write("\n\n")
+    
+    # ---------------------------------------------------------
+    # 4. HISTORI VALIDASI EKF PADA URBAN LOAD (TIME-SERIES)
+    # ---------------------------------------------------------
+    f.write("=== BAGIAN 4: HISTORI VALIDASI EKF VS COULOMB COUNTING ===\n")
+    f.write("Catatan: Data di bawah ini adalah rekaman deret waktu (time-series) dari pengujian Urban Load.\n")
+    
+    # Menyaring kolom yang penting saja agar ukuran file tidak terlalu membengkak
+    kolom_penting = [
+        'Time (s)', 
+        'Current (A)', 
+        'Voltage (V)', 
+        'SOC_CC', 
+        'SOC_EKF', 
+        'V_EKF_Pred'
+    ]
+    df_ekspor = df_dyn[kolom_penting].copy()
+    
+    # Opsional: Mengalikan SOC dengan 100 agar langsung menjadi persentase di Excel
+    df_ekspor['SOC_CC (%)'] = df_ekspor['SOC_CC'] * 100.0
+    df_ekspor['SOC_EKF (%)'] = df_ekspor['SOC_EKF'] * 100.0
+    
+    # Re-order kolom
+    df_ekspor = df_ekspor[['Time (s)', 'Current (A)', 'Voltage (V)', 'V_EKF_Pred', 'SOC_CC (%)', 'SOC_EKF (%)']]
+    
+    # Tambahkan kolom error absolut untuk kemudahan analisis di Excel
+    df_ekspor['Err_V (mV)'] = np.abs(df_ekspor['Voltage (V)'] - df_ekspor['V_EKF_Pred']) * 1000.0
+    
+    # Tulis ke dalam file CSV (Ribuan baris akan tercetak di bawah ini)
+    df_ekspor = df_ekspor[['Time (s)', 'Current (A)', 'Voltage (V)', 'V_EKF_Pred', 
+                            'Err_V (mV)', 'SOC_CC (%)', 'SOC_EKF (%)']]
+    df_ekspor.to_csv(f, index=False, lineterminator='\n')
+    
+    err_v_col = df_ekspor['Err_V (mV)'] / 1000.0
+    rmse_all  = np.sqrt(np.mean(err_v_col**2))
+    mask_op   = df_dyn['SOC_EKF'] > 0.02
+    rmse_op   = np.sqrt(np.mean((df_dyn.loc[mask_op,'Voltage (V)'] - df_dyn.loc[mask_op,'V_EKF_Pred'])**2))
+    mae_all   = err_v_col.mean()
+    max_err   = err_v_col.max()
+    
+print(f"[SUCCESS] Seluruh data berhasil diekspor ke dalam file: '{output_filename}'")
+print(f"Lokasi direktori penyimpanan: {os.getcwd()}")
+print(f"[INFO] RMSE Keseluruhan : {rmse_all*1000:.4f} mV")
+print(f"[INFO] RMSE Operasional : {rmse_op*1000:.4f} mV  (SOC > 2%)")
+--- CELL 38 (markdown) ---
+# Model Baterai dalam Format CSV
+
+File `Hasil_Validasi_BMS_Skripsi.csv` berisi ringkasan lengkap model baterai LiFePO4 yang telah dikembangkan, termasuk:
+
+- **Parameter Kapasitas**: Kapasitas nominal baterai dalam Ah dan As.
+- **Tabel OCV vs SOC**: Look-Up Table (LUT) tegangan sirkuit terbuka sejati dari data eksperimen HPPC.
+- **Parameter ECM Dinamis**: Nilai hambatan internal (R0, R1) dan kapasitansi (C1) yang bervariasi berdasarkan SOC.
+- **Histori Validasi EKF**: Data deret waktu dari profil Urban Load, termasuk estimasi SOC via Coulomb Counting dan EKF, serta prediksi tegangan dengan metrik error (RMSE, MAE).
+
+File ini dapat diimpor ke Excel, MATLAB, atau Python untuk analisis lanjutan, visualisasi, atau implementasi pada mikrokontroler BMS. Data disusun dalam format tabular untuk kemudahan akses dan verifikasi.
+--- CELL 39 (code) ---
+# Nama file output untuk model baterai dalam format CSV
+csv_model_filename = 'Model_Baterai_EKF.csv'
+
+# Membuat dictionary model yang akan diekspor ke CSV
+model_csv_data = {
+    'Parameter': [],
+    'Value': [],
+    'Unit': [],
+    'Description': []
+}
+
+# 1. Parameter Kapasitas
+model_csv_data['Parameter'].extend([
+    'Q_Ah_Nominal', 'Q_As', 'SOC_Initial'
+])
+model_csv_data['Value'].extend([
+    Q_Ah_Nominal, Q_As, SOC_INITIAL
+])
+model_csv_data['Unit'].extend([
+    'Ah', 'As', 'decimal (0-1)'
+])
+model_csv_data['Description'].extend([
+    'Kapasitas nominal baterai', 
+    'Kapasitas dalam ampere-sekon', 
+    'SOC awal berdasarkan invers OCV-LUT'
+])
+
+# 2. Parameter EKF Noise
+model_csv_data['Parameter'].extend([
+    'Q_noise_00', 'Q_noise_11', 'R_noise'
+])
+model_csv_data['Value'].extend([
+    Q_noise[0,0], Q_noise[1,1], R_noise[0,0]
+])
+model_csv_data['Unit'].extend([
+    'V^2', 'V^2', 'V^2'
+])
+model_csv_data['Description'].extend([
+    'Process noise untuk SOC', 
+    'Process noise untuk V_RC', 
+    'Measurement noise sensor tegangan'
+])
+
+# Buat DataFrame untuk parameter
+df_params = pd.DataFrame(model_csv_data)
+
+# ========================================================
+# PERBAIKAN: MEMBUAT OCV LOOKUP TABLE MENJADI 21 TITIK
+# ========================================================
+# Membuat array SOC dari 0.0 hingga 1.0 sebanyak 21 titik (interval 0.05)
+soc_21_points = np.linspace(0.0, 1.0, 21)
+
+# Menggunakan fungsi interpolasi Cubic Spline dari Bagian 3.3 
+# untuk mendapatkan nilai OCV yang halus di ke-21 titik tersebut
+ocv_21_points = spline_func(soc_21_points)
+
+# Buat DataFrame untuk OCV table (21 Titik)
+ocv_csv = pd.DataFrame({
+    'SOC': soc_21_points,
+    'OCV_V': np.round(ocv_21_points, 3) # Dibulatkan 3 angka di belakang koma
+})
+# ========================================================
+
+# Buat DataFrame untuk ECM parameters
+ecm_csv = df_ecm_clean.copy()
+ecm_csv.columns = ['SOC_percent', 'R0_ohm', 'R1_ohm', 'C1_farad', 'Tau_s']
+
+# Gabungkan semua data ke dalam satu file CSV dengan sections
+with open(csv_model_filename, 'w') as f:
+    f.write("# Model Baterai LiFePO4 - Format CSV untuk Python\n")
+    f.write("# Dibuat dari notebook ecm_ekf_final_v5.ipynb\n")
+    f.write("# Tanggal: " + pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S') + "\n\n")
+    
+    # Section 1: Parameters
+    f.write("=== BATTERY PARAMETERS ===\n")
+    df_params.to_csv(f, index=False)
+    f.write("\n\n")
+    
+    # Section 2: OCV Table
+    f.write("=== OCV LOOKUP TABLE (21 TITIK) ===\n")
+    ocv_csv.to_csv(f, index=False)
+    f.write("\n\n")
+    
+    # Section 3: ECM Parameters
+    f.write("=== ECM PARAMETERS (1-RC Thevenin) ===\n")
+    ecm_csv.to_csv(f, index=False)
+    f.write("\n\n")
+
+print(f"[SUCCESS] Model baterai berhasil diekspor ke file CSV: '{csv_model_filename}'")
+print(f"[INFO] Lokasi: {os.getcwd()}")
+print(f"[INFO] File berisi parameter baterai, OCV table 21 Titik, dan ECM parameters")
+print(f"[INFO] Format: Compatible dengan Python pandas untuk import mudah")

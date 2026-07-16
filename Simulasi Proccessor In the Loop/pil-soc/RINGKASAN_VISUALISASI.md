@@ -1,6 +1,6 @@
 ﻿# Ringkasan File Visualisasi & Validasi â€” Skripsi EKF SoC Baterai LiFePO4
 
-> **Konteks:** File-file ini dibuat untuk menjawab catatan dosen penguji saat sidang skripsi,
+> **Konteks:** File-file ini dibuat untuk menjawab catatan,
 > yaitu permintaan visualisasi grafik dari tabel data dan pembuktian kebenaran RMSE & MAE.
 > Semua file berada di folder `pil-soc/`.
 
@@ -116,7 +116,7 @@ pil-soc/
 
 ---
 
-## 4. Pertanyaan Dosen & Jawaban Siap Pakai
+## 4. Pertanyaan2 & Jawaban Siap Pakai
 
 ---
 

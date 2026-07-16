@@ -9,7 +9,7 @@ Output:
   grafik_bab4_charging5a.png
   grafik_bab4_discharging44a.png
   grafik_bab4_dynamic.png
-  grafik_bab4_rmse_tuning.png      <- untuk menjawab pertanyaan dosen soal pemilihan Q,R
+  grafik_bab4_rmse_tuning.png      <- untuk menjawab pertanyaan soal pemilihan Q,R
 """
 
 import numpy as np
@@ -191,7 +191,7 @@ def plot_dataset_3offset(fname, soc_init, dataset_label, outfile):
     return out
 
 # ─────────────────────────────────────────────────────────────
-# 7. GRAFIK BATANG RMSE TUNING — Khusus untuk Pertanyaan Dosen
+# 7. GRAFIK BATANG RMSE TUNING — Khusus untuk Pertanyaan2
 #    Memvisualisasikan mengapa Pengujian 3 dipilih
 # ─────────────────────────────────────────────────────────────
 def plot_rmse_tuning_per_dataset():
@@ -347,7 +347,7 @@ if __name__ == "__main__":
         "dataset_dynamic_profiling_urban_load.csv", 0.953,
         "Discharging 15A, 5A, 10A (Dynamic Profiling)", "grafik_bab4_dynamic.png")
 
-    # Grafik batang RMSE tuning (jawaban pertanyaan dosen)
+    # Grafik batang RMSE tuning
     plot_rmse_tuning_per_dataset()
 
     # Grafik ringkasan 3×3 (semua offset)
